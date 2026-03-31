@@ -473,7 +473,7 @@ async def delete_email_customization(
 
     try:
         client = await get_okta_client(manager)
-        _, err = await client.delete_email_customization(brand_id, template_name, customization_id)
+        _, _, err = await client.delete_email_customization(brand_id, template_name, customization_id)
 
         if err:
             logger.error(f"Okta API error deleting customization {customization_id} for template '{template_name}' on brand {brand_id}: {err}")
@@ -526,7 +526,7 @@ async def delete_all_email_customizations(
 
     try:
         client = await get_okta_client(manager)
-        _, err = await client.delete_all_customizations(brand_id, template_name)
+        _, _, err = await client.delete_all_customizations(brand_id, template_name)
 
         if err:
             logger.error(f"Okta API error deleting all customizations for template '{template_name}' on brand {brand_id}: {err}")
@@ -812,7 +812,7 @@ async def send_test_email(
 
     try:
         client = await get_okta_client(manager)
-        _, err = await client.send_test_email(brand_id, template_name, language=language)
+        _, _, err = await client.send_test_email(brand_id, template_name, language=language)
 
         if err:
             logger.error(f"Okta API error sending test email for template '{template_name}' on brand {brand_id}: {err}")
