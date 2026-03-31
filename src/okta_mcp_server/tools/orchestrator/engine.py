@@ -461,7 +461,7 @@ async def _action_list_users(params: dict, client) -> list:
     if params.get("q"):
         query["q"] = params["q"]
     if params.get("limit"):
-        query["limit"] = params["limit"]
+        query["limit"] = int(params["limit"])
 
     users, _, err = await client.list_users(**query)
     if err:
@@ -489,9 +489,7 @@ async def _action_get_user(params: dict, client) -> Any:
             f"Direct lookup for '{user_id}' returned None/error — "
             "falling back to list_users search"
         )
-        users, _, search_err = await client.list_users(
-            query_params={"q": user_id, "limit": "5"}
-        )
+        users, _, search_err = await client.list_users(q=user_id, limit=5)
         if search_err:
             raise RuntimeError(f"Okta API error finding user '{user_id}': {search_err}")
         if not users:

@@ -436,6 +436,7 @@ class TestEngineExecution:
     async def test_user_not_found(self):
         mock_client = _make_mock_client()
         mock_client.get_user.return_value = (None, None, "User not found")
+        mock_client.list_users.return_value = ([], MagicMock(), None)  # fallback also empty
 
         plan = build_offboard_user("nonexistent@acme.com")
         with patch(
@@ -445,7 +446,7 @@ class TestEngineExecution:
             result = await execute_plan(plan, MagicMock())
 
         assert result.steps[0].result.status == StepStatus.FAILED
-        assert "User not found" in result.steps[0].result.error
+        assert "nonexistent@acme.com" in result.steps[0].result.error
 
     @pytest.mark.asyncio
     async def test_zero_groups(self):
