@@ -1,0 +1,140 @@
+===========================================================================
+OKTA MCP SERVER - TOOL DEFINITION TOKEN COST METRICS
+===========================================================================
+
+---------------------------------------------------------------------------
+1. TOKEN COST PER TOOL DEFINITION
+---------------------------------------------------------------------------
+Tool Name                           Category        Params  Tokens  
+---------------------------------------------------------------------------
+get_logs                            system_logs     7       286     
+list_users                          users           6       282     
+list_applications                   applications    6       257     
+list_groups                         groups          6       251     
+list_policies                       policies        5       236     
+list_group_users                    groups          4       182     
+update_policy_rule                  policies        3       146     
+confirm_delete_application          applications    2       129     
+confirm_delete_group                groups          2       129     
+create_application                  applications    2       123     
+create_policy                       policies        1       122     
+add_user_to_group                   groups          2       121     
+remove_user_from_group              groups          2       121     
+create_policy_rule                  policies        2       121     
+deactivate_policy_rule              policies        2       119     
+update_user                         users           2       118     
+delete_policy_rule                  policies        2       117     
+update_application                  applications    2       116     
+update_group                        groups          2       114     
+activate_policy_rule                policies        2       113     
+get_application                     applications    2       112     
+get_policy_rule                     policies        2       112     
+update_policy                       policies        2       110     
+delete_deactivated_user             users           1       100     
+delete_application                  applications    1       96      
+delete_group                        groups          1       96      
+deactivate_user                     users           1       95      
+create_user                         users           1       92      
+deactivate_application              applications    1       87      
+get_user                            users           1       85      
+create_group                        groups          1       84      
+list_group_apps                     groups          1       83      
+deactivate_policy                   policies        1       83      
+activate_application                applications    1       82      
+get_group                           groups          1       82      
+delete_policy                       policies        1       81      
+list_policy_rules                   policies        1       80      
+get_policy                          policies        1       78      
+activate_policy                     policies        1       77      
+get_user_profile_attributes         users           0       62      
+---------------------------------------------------------------------------
+TOTAL (all 40 tools)                                        4980    
+
+---------------------------------------------------------------------------
+2. TOKEN COST PER CATEGORY
+---------------------------------------------------------------------------
+Category             Tools    Tokens     % of Total
+---------------------------------------------------------------------------
+applications         8        1002       20.1%
+groups               10       1263       25.4%
+policies             14       1595       32.0%
+system_logs          1        286        5.7%
+users                7        834        16.7%
+---------------------------------------------------------------------------
+ALL                  40       4980       100.0%
+
+---------------------------------------------------------------------------
+3. ARCHITECTURE COMPARISON - PROMPT TOKEN COST
+---------------------------------------------------------------------------
+
+  Architecture A: All 40 tools loaded upfront
+    Tool definitions in context: 4980 tokens
+    Knowledge graph resource:    0 tokens
+    TOTAL per prompt:            4980 tokens
+
+  Architecture B: search_tools only (no KG resource)
+    Tool definitions in context: 207 tokens (search_tools only)
+    Knowledge graph resource:    0 tokens
+    TOTAL per prompt:            207 tokens
+
+  Architecture C: search_tools + knowledge graph resource
+    Tool definitions in context: 207 tokens (search_tools only)
+    Knowledge graph resource:    10194 tokens
+    TOTAL per prompt:            10401 tokens
+
+  After 1st search (users + system_logs loaded):
+    Arch A: 4980 tokens (unchanged)
+    Arch B: 1327 tokens (search_tools + 8 tools)
+    Arch C: 11521 tokens (search_tools + KG + 8 tools)
+
+  After ALL categories loaded (worst case):
+    Arch A: 4980 tokens
+    Arch B: 5187 tokens (search_tools + all tools)
+    Arch C: 15381 tokens (search_tools + KG + all tools)
+
+  Savings (initial prompt, before any search):
+    B vs A: 4773 tokens saved (95.8%)
+    C vs A: 5421 tokens MORE (108.9% overhead from KG)
+
+---------------------------------------------------------------------------
+4. DOLLAR COST PER PROMPT (input tokens only)
+---------------------------------------------------------------------------
+Model                A (all)      B (search)   C (srch+KG)  B saves    C vs A    
+---------------------------------------------------------------------------
+GPT-4o               $0.012450 $0.000517 $0.026003 $0.011932 -$0.013553
+GPT-4.1              $0.009960 $0.000414 $0.020802 $0.009546 -$0.010842
+Claude Sonnet 4      $0.014940 $0.000621 $0.031203 $0.014319 -$0.016263
+Claude Opus 4        $0.074700 $0.003105 $0.156015 $0.071595 -$0.081315
+
+---------------------------------------------------------------------------
+5. COST OVER 100-PROMPT SESSION (tool defs input tokens only)
+---------------------------------------------------------------------------
+Model                Arch A       Arch B       Arch C      
+---------------------------------------------------------------------------
+GPT-4o               $1.2450    $0.0517    $2.6002
+GPT-4.1              $0.9960    $0.0414    $2.0802
+Claude Sonnet 4      $1.4940    $0.0621    $3.1203
+Claude Opus 4        $7.4700    $0.3105    $15.6015
+
+---------------------------------------------------------------------------
+6. KNOWLEDGE GRAPH RESOURCE BREAKDOWN
+---------------------------------------------------------------------------
+  Total chars:          43982
+  Total tokens:         10194
+  Categories:           5
+  Tools described:      40
+  Relationships:        365
+  Unique tags:          31
+
+---------------------------------------------------------------------------
+7. TRADEOFF ANALYSIS
+---------------------------------------------------------------------------
+  Knowledge graph: 10194 tokens
+  All tool definitions: 4980 tokens
+  KG is 5214 tokens MORE than loading all tools
+  KG costs 204.7% of loading all tools
+  search_tools definition: 207 tokens
+  Break-even: KG is worth it if it provides enough context
+              to avoid loading all 4980 tool-def tokens
+
+===========================================================================

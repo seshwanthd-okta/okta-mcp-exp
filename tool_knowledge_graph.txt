@@ -1,0 +1,600 @@
+# Okta MCP Server — Tool Knowledge Graph
+
+## Summary
+- Total tools: 40
+- Categories: 5
+- Unique tags: 31
+- Relationship edges: 365
+- Tools per category: applications (8), groups (10), policies (14), system_logs (1), users (7)
+- CRUD verbs: activate (3), add (1), confirm (2), create (5), deactivate (4), delete (7), get (6), list (8), remove (1), update (5)
+
+## Tools by Category
+
+### applications (8 tools)
+  - **list_applications**: List all applications from the Okta organization. Supports query, filter, pagination, and expand parameters.
+    - `q`: str – Search by label, property, or link
+    - `after`: str – Pagination cursor
+    - `limit`: int – Results per page (min 20, max 100)
+    - `filter`: str – Filter by status, user.id, group.id, or credentials.signing.kid
+    - `expand`: str – Expand user/group profile objects
+    - `include_non_deleted`: bool – Include non-deleted applications
+    - tags: list, read, applications, apps, pagination
+  - **get_application**: Get an application by ID from the Okta organization.
+    - `app_id`: str (required) – The ID of the application
+    - `expand`: str – Expand user/group profile objects
+    - tags: get, read, applications, apps, lookup
+  - **create_application**: Create a new application in the Okta organization.
+    - `app_config`: dict (required) – Application configuration (name, label, signOnMode, settings, etc.)
+    - `activate`: bool – Activate after creation (default: True)
+    - tags: create, write, applications, apps
+  - **update_application**: Update an application by ID in the Okta organization.
+    - `app_id`: str (required) – The ID of the application to update
+    - `app_config`: dict (required) – Updated application configuration
+    - tags: update, write, applications, apps
+  - **delete_application**: Delete an application by ID. Requires user confirmation. If elicitation is unavailable the model should call confirm_delete_application.
+    - `app_id`: str (required) – The ID of the application to delete
+    - tags: delete, write, applications, apps, lifecycle
+  - **confirm_delete_application**: Confirm and execute application deletion (deprecated backward-compat flow). Only call after the human user has explicitly typed 'DELETE'.
+    - `app_id`: str (required) – The ID of the application
+    - `confirmation`: str (required) – Must be 'DELETE'
+    - tags: delete, write, applications, apps, confirm, deprecated
+  - **activate_application**: Activate an application in the Okta organization.
+    - `app_id`: str (required) – The ID of the application to activate
+    - tags: activate, write, applications, apps, lifecycle
+  - **deactivate_application**: Deactivate an application in the Okta organization. Requires confirmation.
+    - `app_id`: str (required) – The ID of the application to deactivate
+    - tags: deactivate, write, applications, apps, lifecycle
+
+### groups (10 tools)
+  - **list_groups**: List all groups from the Okta organization with pagination support. Supports search, filter, and query parameters on group profile attributes.
+    - `search`: str – Search string for specific groups
+    - `filter`: str – Filter by Okta group profile attributes
+    - `q`: str – Query string to search groups
+    - `fetch_all`: bool – Auto-fetch all pages (default: False)
+    - `after`: str – Pagination cursor
+    - `limit`: int – Results per page (min 20, max 100)
+    - tags: list, read, groups, pagination, search
+  - **get_group**: Get a group by ID from the Okta organization.
+    - `group_id`: str (required) – The ID of the group
+    - tags: get, read, groups, lookup
+  - **create_group**: Create a new group in the Okta organization.
+    - `profile`: dict (required) – Group profile (name, description, etc.)
+    - tags: create, write, groups
+  - **update_group**: Update a group by ID with the provided profile.
+    - `group_id`: str (required) – The ID of the group to update
+    - `profile`: dict (required) – New profile fields
+    - tags: update, write, groups
+  - **delete_group**: Delete a group by ID. Requires user confirmation. If elicitation is unavailable the model should call confirm_delete_group.
+    - `group_id`: str (required) – The ID of the group to delete
+    - tags: delete, write, groups, lifecycle
+  - **confirm_delete_group**: Confirm and execute group deletion (deprecated backward-compat flow). Only call after the human user has explicitly typed 'DELETE'.
+    - `group_id`: str (required) – The ID of the group
+    - `confirmation`: str (required) – Must be 'DELETE'
+    - tags: delete, write, groups, confirm, deprecated
+  - **list_group_users**: List all users in a group by group ID with pagination support.
+    - `group_id`: str (required) – The ID of the group
+    - `fetch_all`: bool – Auto-fetch all pages (default: False)
+    - `after`: str – Pagination cursor
+    - `limit`: int – Results per page (min 20, max 100)
+    - tags: list, read, groups, users, membership, pagination
+  - **list_group_apps**: List all applications assigned to a group by group ID.
+    - `group_id`: str (required) – The ID of the group
+    - tags: list, read, groups, applications, apps, membership
+  - **add_user_to_group**: Add a user to a group in the Okta organization.
+    - `group_id`: str (required) – The ID of the group
+    - `user_id`: str (required) – The ID of the user to add
+    - tags: add, write, groups, users, membership
+  - **remove_user_from_group**: Remove a user from a group in the Okta organization.
+    - `group_id`: str (required) – The ID of the group
+    - `user_id`: str (required) – The ID of the user to remove
+    - tags: remove, write, groups, users, membership
+
+### policies (14 tools)
+  - **list_policies**: List all policies from the Okta organization. Requires a policy type: OKTA_SIGN_ON, PASSWORD, MFA_ENROLL, IDP_DISCOVERY, ACCESS_POLICY, PROFILE_ENROLLMENT, POST_AUTH_SESSION, ENTITY_RISK.
+    - `type`: str (required) – Policy type
+    - `status`: str – ACTIVE or INACTIVE
+    - `q`: str – Search policies by name
+    - `limit`: int – Results per page (min 20, max 100)
+    - `after`: str – Pagination cursor
+    - tags: list, read, policies, pagination
+  - **get_policy**: Retrieve a specific policy by ID.
+    - `policy_id`: str (required) – The ID of the policy
+    - tags: get, read, policies, lookup
+  - **create_policy**: Create a new policy. Supported types: OKTA_SIGN_ON, PASSWORD, MFA_ENROLL, ACCESS_POLICY, PROFILE_ENROLLMENT, POST_AUTH_SESSION, ENTITY_RISK, DEVICE_SIGNAL_COLLECTION.
+    - `policy_data`: dict (required) – Policy config (type, name, description, status, priority, conditions, settings)
+    - tags: create, write, policies
+  - **update_policy**: Update an existing policy.
+    - `policy_id`: str (required) – The ID of the policy to update
+    - `policy_data`: dict (required) – Updated policy configuration
+    - tags: update, write, policies
+  - **delete_policy**: Delete a policy. Requires user confirmation.
+    - `policy_id`: str (required) – The ID of the policy to delete
+    - tags: delete, write, policies, lifecycle
+  - **activate_policy**: Activate a policy.
+    - `policy_id`: str (required) – The ID of the policy to activate
+    - tags: activate, write, policies, lifecycle
+  - **deactivate_policy**: Deactivate a policy. Requires user confirmation.
+    - `policy_id`: str (required) – The ID of the policy to deactivate
+    - tags: deactivate, write, policies, lifecycle
+  - **list_policy_rules**: List all rules for a specific policy.
+    - `policy_id`: str (required) – The ID of the policy
+    - tags: list, read, policies, rules
+  - **get_policy_rule**: Retrieve a specific policy rule.
+    - `policy_id`: str (required) – The ID of the policy
+    - `rule_id`: str (required) – The ID of the rule
+    - tags: get, read, policies, rules, lookup
+  - **create_policy_rule**: Create a new rule for a policy.
+    - `policy_id`: str (required) – The ID of the policy
+    - `rule_data`: dict (required) – Rule config (name, priority, status, conditions, actions)
+    - tags: create, write, policies, rules
+  - **update_policy_rule**: Update an existing policy rule.
+    - `policy_id`: str (required) – The ID of the policy
+    - `rule_id`: str (required) – The ID of the rule to update
+    - `rule_data`: dict (required) – Updated rule configuration
+    - tags: update, write, policies, rules
+  - **delete_policy_rule**: Delete a policy rule. Requires user confirmation.
+    - `policy_id`: str (required) – The ID of the policy
+    - `rule_id`: str (required) – The ID of the rule to delete
+    - tags: delete, write, policies, rules, lifecycle
+  - **activate_policy_rule**: Activate a policy rule.
+    - `policy_id`: str (required) – The ID of the policy
+    - `rule_id`: str (required) – The ID of the rule to activate
+    - tags: activate, write, policies, rules, lifecycle
+  - **deactivate_policy_rule**: Deactivate a policy rule. Requires user confirmation.
+    - `policy_id`: str (required) – The ID of the policy
+    - `rule_id`: str (required) – The ID of the rule to deactivate
+    - tags: deactivate, write, policies, rules, lifecycle
+
+### system_logs (1 tools)
+  - **get_logs**: Retrieve system logs from the Okta organization with pagination support. Supports time-range filtering, query, and filter expressions.
+    - `fetch_all`: bool – Auto-fetch all pages (default: False)
+    - `after`: str – Pagination cursor
+    - `limit`: int – Results per page (min 20, max 100)
+    - `since`: str – Filter logs since this ISO 8601 timestamp
+    - `until`: str – Filter logs until this ISO 8601 timestamp
+    - `filter`: str – Filter expression for log events
+    - `q`: str – Query string to search log events
+    - tags: list, read, system_logs, logs, audit, events, pagination
+
+### users (7 tools)
+  - **list_users**: List all users from the Okta organization with pagination support. Supports search, filter, and query parameters on user profile attributes. By default only returns users whose status is not DEPROVISIONED.
+    - `search`: str – Search string for specific users (e.g., profile.organization eq "Okta")
+    - `filter`: str – Filter by Okta profile attributes
+    - `q`: str – Query string to search by Okta profile attributes
+    - `fetch_all`: bool – Auto-fetch all pages (default: False)
+    - `after`: str – Pagination cursor for next page
+    - `limit`: int – Results per page (min 20, max 100)
+    - tags: list, search, read, users, pagination, profile
+  - **get_user**: Get a single user by ID from the Okta organization.
+    - `user_id`: str (required) – The ID of the user to retrieve
+    - tags: get, read, users, lookup
+  - **get_user_profile_attributes**: List all user profile attributes supported by your Okta org. Useful to check whether a profile attribute name is valid before searching.
+    - tags: get, read, users, profile, attributes, schema
+  - **create_user**: Create a new user in the Okta organization with the provided profile.
+    - `profile`: dict (required) – User profile (email, login, firstName, lastName, etc.)
+    - tags: create, write, users
+  - **update_user**: Update an existing user in the Okta organization with the provided profile.
+    - `user_id`: str (required) – The ID of the user to update
+    - `profile`: dict (required) – Updated profile fields
+    - tags: update, write, users
+  - **deactivate_user**: Deactivate a user from the Okta organization. Requires confirmation. Deactivation is a prerequisite for deletion.
+    - `user_id`: str (required) – The ID of the user to deactivate
+    - tags: deactivate, write, users, lifecycle
+  - **delete_deactivated_user**: Permanently delete a user who has already been deactivated or deprovisioned. Requires confirmation.
+    - `user_id`: str (required) – The ID of the deactivated/deprovisioned user to delete
+    - tags: delete, write, users, lifecycle
+
+## CRUD / Lifecycle Families
+
+  - **activate**: activate_application, activate_policy, activate_policy_rule
+  - **add**: add_user_to_group
+  - **confirm**: confirm_delete_application, confirm_delete_group
+  - **create**: create_user, create_application, create_group, create_policy, create_policy_rule
+  - **deactivate**: deactivate_user, deactivate_application, deactivate_policy, deactivate_policy_rule
+  - **delete**: delete_deactivated_user, delete_application, confirm_delete_application, delete_group, confirm_delete_group, delete_policy, delete_policy_rule
+  - **get**: get_user, get_user_profile_attributes, get_application, get_group, get_policy, get_policy_rule
+  - **list**: list_users, list_applications, list_groups, list_group_users, list_group_apps, list_policies, list_policy_rules, get_logs
+  - **remove**: remove_user_from_group
+  - **update**: update_user, update_application, update_group, update_policy, update_policy_rule
+
+## Cross-Tool Relationships (365 edges)
+
+  - list_users ↔ list_groups  (shared parameter 'search')
+  - get_user ↔ update_user  (shared parameter 'user_id')
+  - get_user ↔ deactivate_user  (shared parameter 'user_id')
+  - get_user ↔ delete_deactivated_user  (shared parameter 'user_id')
+  - get_user ↔ add_user_to_group  (shared parameter 'user_id')
+  - get_user ↔ remove_user_from_group  (shared parameter 'user_id')
+  - update_user ↔ deactivate_user  (shared parameter 'user_id')
+  - update_user ↔ delete_deactivated_user  (shared parameter 'user_id')
+  - update_user ↔ add_user_to_group  (shared parameter 'user_id')
+  - update_user ↔ remove_user_from_group  (shared parameter 'user_id')
+  - deactivate_user ↔ delete_deactivated_user  (shared parameter 'user_id')
+  - deactivate_user ↔ add_user_to_group  (shared parameter 'user_id')
+  - deactivate_user ↔ remove_user_from_group  (shared parameter 'user_id')
+  - delete_deactivated_user ↔ add_user_to_group  (shared parameter 'user_id')
+  - delete_deactivated_user ↔ remove_user_from_group  (shared parameter 'user_id')
+  - add_user_to_group ↔ remove_user_from_group  (shared parameter 'user_id')
+  - create_user ↔ update_user  (shared parameter 'profile')
+  - create_user ↔ create_group  (shared parameter 'profile')
+  - create_user ↔ update_group  (shared parameter 'profile')
+  - update_user ↔ create_group  (shared parameter 'profile')
+  - update_user ↔ update_group  (shared parameter 'profile')
+  - create_group ↔ update_group  (shared parameter 'profile')
+  - list_applications ↔ get_application  (shared parameter 'expand')
+  - get_application ↔ update_application  (shared parameter 'app_id')
+  - get_application ↔ delete_application  (shared parameter 'app_id')
+  - get_application ↔ confirm_delete_application  (shared parameter 'app_id')
+  - get_application ↔ activate_application  (shared parameter 'app_id')
+  - get_application ↔ deactivate_application  (shared parameter 'app_id')
+  - update_application ↔ delete_application  (shared parameter 'app_id')
+  - update_application ↔ confirm_delete_application  (shared parameter 'app_id')
+  - update_application ↔ activate_application  (shared parameter 'app_id')
+  - update_application ↔ deactivate_application  (shared parameter 'app_id')
+  - delete_application ↔ confirm_delete_application  (shared parameter 'app_id')
+  - delete_application ↔ activate_application  (shared parameter 'app_id')
+  - delete_application ↔ deactivate_application  (shared parameter 'app_id')
+  - confirm_delete_application ↔ activate_application  (shared parameter 'app_id')
+  - confirm_delete_application ↔ deactivate_application  (shared parameter 'app_id')
+  - activate_application ↔ deactivate_application  (shared parameter 'app_id')
+  - create_application ↔ update_application  (shared parameter 'app_config')
+  - confirm_delete_application ↔ confirm_delete_group  (shared parameter 'confirmation')
+  - get_group ↔ update_group  (shared parameter 'group_id')
+  - get_group ↔ delete_group  (shared parameter 'group_id')
+  - get_group ↔ confirm_delete_group  (shared parameter 'group_id')
+  - get_group ↔ list_group_users  (shared parameter 'group_id')
+  - get_group ↔ list_group_apps  (shared parameter 'group_id')
+  - get_group ↔ add_user_to_group  (shared parameter 'group_id')
+  - get_group ↔ remove_user_from_group  (shared parameter 'group_id')
+  - update_group ↔ delete_group  (shared parameter 'group_id')
+  - update_group ↔ confirm_delete_group  (shared parameter 'group_id')
+  - update_group ↔ list_group_users  (shared parameter 'group_id')
+  - update_group ↔ list_group_apps  (shared parameter 'group_id')
+  - update_group ↔ add_user_to_group  (shared parameter 'group_id')
+  - update_group ↔ remove_user_from_group  (shared parameter 'group_id')
+  - delete_group ↔ confirm_delete_group  (shared parameter 'group_id')
+  - delete_group ↔ list_group_users  (shared parameter 'group_id')
+  - delete_group ↔ list_group_apps  (shared parameter 'group_id')
+  - delete_group ↔ add_user_to_group  (shared parameter 'group_id')
+  - delete_group ↔ remove_user_from_group  (shared parameter 'group_id')
+  - confirm_delete_group ↔ list_group_users  (shared parameter 'group_id')
+  - confirm_delete_group ↔ list_group_apps  (shared parameter 'group_id')
+  - confirm_delete_group ↔ add_user_to_group  (shared parameter 'group_id')
+  - confirm_delete_group ↔ remove_user_from_group  (shared parameter 'group_id')
+  - list_group_users ↔ list_group_apps  (shared parameter 'group_id')
+  - list_group_users ↔ add_user_to_group  (shared parameter 'group_id')
+  - list_group_users ↔ remove_user_from_group  (shared parameter 'group_id')
+  - list_group_apps ↔ add_user_to_group  (shared parameter 'group_id')
+  - list_group_apps ↔ remove_user_from_group  (shared parameter 'group_id')
+  - add_user_to_group ↔ remove_user_from_group  (shared parameter 'group_id')
+  - get_policy ↔ update_policy  (shared parameter 'policy_id')
+  - get_policy ↔ delete_policy  (shared parameter 'policy_id')
+  - get_policy ↔ activate_policy  (shared parameter 'policy_id')
+  - get_policy ↔ deactivate_policy  (shared parameter 'policy_id')
+  - get_policy ↔ list_policy_rules  (shared parameter 'policy_id')
+  - get_policy ↔ get_policy_rule  (shared parameter 'policy_id')
+  - get_policy ↔ create_policy_rule  (shared parameter 'policy_id')
+  - get_policy ↔ update_policy_rule  (shared parameter 'policy_id')
+  - get_policy ↔ delete_policy_rule  (shared parameter 'policy_id')
+  - get_policy ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - get_policy ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - update_policy ↔ delete_policy  (shared parameter 'policy_id')
+  - update_policy ↔ activate_policy  (shared parameter 'policy_id')
+  - update_policy ↔ deactivate_policy  (shared parameter 'policy_id')
+  - update_policy ↔ list_policy_rules  (shared parameter 'policy_id')
+  - update_policy ↔ get_policy_rule  (shared parameter 'policy_id')
+  - update_policy ↔ create_policy_rule  (shared parameter 'policy_id')
+  - update_policy ↔ update_policy_rule  (shared parameter 'policy_id')
+  - update_policy ↔ delete_policy_rule  (shared parameter 'policy_id')
+  - update_policy ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - update_policy ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - delete_policy ↔ activate_policy  (shared parameter 'policy_id')
+  - delete_policy ↔ deactivate_policy  (shared parameter 'policy_id')
+  - delete_policy ↔ list_policy_rules  (shared parameter 'policy_id')
+  - delete_policy ↔ get_policy_rule  (shared parameter 'policy_id')
+  - delete_policy ↔ create_policy_rule  (shared parameter 'policy_id')
+  - delete_policy ↔ update_policy_rule  (shared parameter 'policy_id')
+  - delete_policy ↔ delete_policy_rule  (shared parameter 'policy_id')
+  - delete_policy ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - delete_policy ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - activate_policy ↔ deactivate_policy  (shared parameter 'policy_id')
+  - activate_policy ↔ list_policy_rules  (shared parameter 'policy_id')
+  - activate_policy ↔ get_policy_rule  (shared parameter 'policy_id')
+  - activate_policy ↔ create_policy_rule  (shared parameter 'policy_id')
+  - activate_policy ↔ update_policy_rule  (shared parameter 'policy_id')
+  - activate_policy ↔ delete_policy_rule  (shared parameter 'policy_id')
+  - activate_policy ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - activate_policy ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - deactivate_policy ↔ list_policy_rules  (shared parameter 'policy_id')
+  - deactivate_policy ↔ get_policy_rule  (shared parameter 'policy_id')
+  - deactivate_policy ↔ create_policy_rule  (shared parameter 'policy_id')
+  - deactivate_policy ↔ update_policy_rule  (shared parameter 'policy_id')
+  - deactivate_policy ↔ delete_policy_rule  (shared parameter 'policy_id')
+  - deactivate_policy ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - deactivate_policy ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - list_policy_rules ↔ get_policy_rule  (shared parameter 'policy_id')
+  - list_policy_rules ↔ create_policy_rule  (shared parameter 'policy_id')
+  - list_policy_rules ↔ update_policy_rule  (shared parameter 'policy_id')
+  - list_policy_rules ↔ delete_policy_rule  (shared parameter 'policy_id')
+  - list_policy_rules ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - list_policy_rules ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - get_policy_rule ↔ create_policy_rule  (shared parameter 'policy_id')
+  - get_policy_rule ↔ update_policy_rule  (shared parameter 'policy_id')
+  - get_policy_rule ↔ delete_policy_rule  (shared parameter 'policy_id')
+  - get_policy_rule ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - get_policy_rule ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - create_policy_rule ↔ update_policy_rule  (shared parameter 'policy_id')
+  - create_policy_rule ↔ delete_policy_rule  (shared parameter 'policy_id')
+  - create_policy_rule ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - create_policy_rule ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - update_policy_rule ↔ delete_policy_rule  (shared parameter 'policy_id')
+  - update_policy_rule ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - update_policy_rule ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - delete_policy_rule ↔ activate_policy_rule  (shared parameter 'policy_id')
+  - delete_policy_rule ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - activate_policy_rule ↔ deactivate_policy_rule  (shared parameter 'policy_id')
+  - create_policy ↔ update_policy  (shared parameter 'policy_data')
+  - get_policy_rule ↔ update_policy_rule  (shared parameter 'rule_id')
+  - get_policy_rule ↔ delete_policy_rule  (shared parameter 'rule_id')
+  - get_policy_rule ↔ activate_policy_rule  (shared parameter 'rule_id')
+  - get_policy_rule ↔ deactivate_policy_rule  (shared parameter 'rule_id')
+  - update_policy_rule ↔ delete_policy_rule  (shared parameter 'rule_id')
+  - update_policy_rule ↔ activate_policy_rule  (shared parameter 'rule_id')
+  - update_policy_rule ↔ deactivate_policy_rule  (shared parameter 'rule_id')
+  - delete_policy_rule ↔ activate_policy_rule  (shared parameter 'rule_id')
+  - delete_policy_rule ↔ deactivate_policy_rule  (shared parameter 'rule_id')
+  - activate_policy_rule ↔ deactivate_policy_rule  (shared parameter 'rule_id')
+  - create_policy_rule ↔ update_policy_rule  (shared parameter 'rule_data')
+  - get_user ↔ create_user  (same entity 'user' (get / create))
+  - get_user ↔ update_user  (same entity 'user' (get / update))
+  - get_user ↔ deactivate_user  (same entity 'user' (get / deactivate))
+  - create_user ↔ update_user  (same entity 'user' (create / update))
+  - create_user ↔ deactivate_user  (same entity 'user' (create / deactivate))
+  - update_user ↔ deactivate_user  (same entity 'user' (update / deactivate))
+  - get_application ↔ create_application  (same entity 'application' (get / create))
+  - get_application ↔ update_application  (same entity 'application' (get / update))
+  - get_application ↔ delete_application  (same entity 'application' (get / delete))
+  - get_application ↔ confirm_delete_application  (same entity 'application' (get / confirm_delete))
+  - get_application ↔ activate_application  (same entity 'application' (get / activate))
+  - get_application ↔ deactivate_application  (same entity 'application' (get / deactivate))
+  - create_application ↔ update_application  (same entity 'application' (create / update))
+  - create_application ↔ delete_application  (same entity 'application' (create / delete))
+  - create_application ↔ confirm_delete_application  (same entity 'application' (create / confirm_delete))
+  - create_application ↔ activate_application  (same entity 'application' (create / activate))
+  - create_application ↔ deactivate_application  (same entity 'application' (create / deactivate))
+  - update_application ↔ delete_application  (same entity 'application' (update / delete))
+  - update_application ↔ confirm_delete_application  (same entity 'application' (update / confirm_delete))
+  - update_application ↔ activate_application  (same entity 'application' (update / activate))
+  - update_application ↔ deactivate_application  (same entity 'application' (update / deactivate))
+  - delete_application ↔ confirm_delete_application  (same entity 'application' (delete / confirm_delete))
+  - delete_application ↔ activate_application  (same entity 'application' (delete / activate))
+  - delete_application ↔ deactivate_application  (same entity 'application' (delete / deactivate))
+  - confirm_delete_application ↔ activate_application  (same entity 'application' (confirm_delete / activate))
+  - confirm_delete_application ↔ deactivate_application  (same entity 'application' (confirm_delete / deactivate))
+  - activate_application ↔ deactivate_application  (same entity 'application' (activate / deactivate))
+  - get_group ↔ create_group  (same entity 'group' (get / create))
+  - get_group ↔ update_group  (same entity 'group' (get / update))
+  - get_group ↔ delete_group  (same entity 'group' (get / delete))
+  - get_group ↔ confirm_delete_group  (same entity 'group' (get / confirm_delete))
+  - create_group ↔ update_group  (same entity 'group' (create / update))
+  - create_group ↔ delete_group  (same entity 'group' (create / delete))
+  - create_group ↔ confirm_delete_group  (same entity 'group' (create / confirm_delete))
+  - update_group ↔ delete_group  (same entity 'group' (update / delete))
+  - update_group ↔ confirm_delete_group  (same entity 'group' (update / confirm_delete))
+  - delete_group ↔ confirm_delete_group  (same entity 'group' (delete / confirm_delete))
+  - get_policy ↔ create_policy  (same entity 'policy' (get / create))
+  - get_policy ↔ update_policy  (same entity 'policy' (get / update))
+  - get_policy ↔ delete_policy  (same entity 'policy' (get / delete))
+  - get_policy ↔ activate_policy  (same entity 'policy' (get / activate))
+  - get_policy ↔ deactivate_policy  (same entity 'policy' (get / deactivate))
+  - create_policy ↔ update_policy  (same entity 'policy' (create / update))
+  - create_policy ↔ delete_policy  (same entity 'policy' (create / delete))
+  - create_policy ↔ activate_policy  (same entity 'policy' (create / activate))
+  - create_policy ↔ deactivate_policy  (same entity 'policy' (create / deactivate))
+  - update_policy ↔ delete_policy  (same entity 'policy' (update / delete))
+  - update_policy ↔ activate_policy  (same entity 'policy' (update / activate))
+  - update_policy ↔ deactivate_policy  (same entity 'policy' (update / deactivate))
+  - delete_policy ↔ activate_policy  (same entity 'policy' (delete / activate))
+  - delete_policy ↔ deactivate_policy  (same entity 'policy' (delete / deactivate))
+  - activate_policy ↔ deactivate_policy  (same entity 'policy' (activate / deactivate))
+  - get_policy_rule ↔ create_policy_rule  (same entity 'policy_rule' (get / create))
+  - get_policy_rule ↔ update_policy_rule  (same entity 'policy_rule' (get / update))
+  - get_policy_rule ↔ delete_policy_rule  (same entity 'policy_rule' (get / delete))
+  - get_policy_rule ↔ activate_policy_rule  (same entity 'policy_rule' (get / activate))
+  - get_policy_rule ↔ deactivate_policy_rule  (same entity 'policy_rule' (get / deactivate))
+  - create_policy_rule ↔ update_policy_rule  (same entity 'policy_rule' (create / update))
+  - create_policy_rule ↔ delete_policy_rule  (same entity 'policy_rule' (create / delete))
+  - create_policy_rule ↔ activate_policy_rule  (same entity 'policy_rule' (create / activate))
+  - create_policy_rule ↔ deactivate_policy_rule  (same entity 'policy_rule' (create / deactivate))
+  - update_policy_rule ↔ delete_policy_rule  (same entity 'policy_rule' (update / delete))
+  - update_policy_rule ↔ activate_policy_rule  (same entity 'policy_rule' (update / activate))
+  - update_policy_rule ↔ deactivate_policy_rule  (same entity 'policy_rule' (update / deactivate))
+  - delete_policy_rule ↔ activate_policy_rule  (same entity 'policy_rule' (delete / activate))
+  - delete_policy_rule ↔ deactivate_policy_rule  (same entity 'policy_rule' (delete / deactivate))
+  - activate_policy_rule ↔ deactivate_policy_rule  (same entity 'policy_rule' (activate / deactivate))
+  - list_groups ↔ list_users  (cross-category tag 'search')
+  - list_group_users ↔ list_users  (cross-category tag 'users')
+  - list_group_users ↔ get_user  (cross-category tag 'users')
+  - list_group_users ↔ get_user_profile_attributes  (cross-category tag 'users')
+  - list_group_users ↔ create_user  (cross-category tag 'users')
+  - list_group_users ↔ update_user  (cross-category tag 'users')
+  - list_group_users ↔ deactivate_user  (cross-category tag 'users')
+  - list_group_users ↔ delete_deactivated_user  (cross-category tag 'users')
+  - add_user_to_group ↔ list_users  (cross-category tag 'users')
+  - add_user_to_group ↔ get_user  (cross-category tag 'users')
+  - add_user_to_group ↔ get_user_profile_attributes  (cross-category tag 'users')
+  - add_user_to_group ↔ create_user  (cross-category tag 'users')
+  - add_user_to_group ↔ update_user  (cross-category tag 'users')
+  - add_user_to_group ↔ deactivate_user  (cross-category tag 'users')
+  - add_user_to_group ↔ delete_deactivated_user  (cross-category tag 'users')
+  - remove_user_from_group ↔ list_users  (cross-category tag 'users')
+  - remove_user_from_group ↔ get_user  (cross-category tag 'users')
+  - remove_user_from_group ↔ get_user_profile_attributes  (cross-category tag 'users')
+  - remove_user_from_group ↔ create_user  (cross-category tag 'users')
+  - remove_user_from_group ↔ update_user  (cross-category tag 'users')
+  - remove_user_from_group ↔ deactivate_user  (cross-category tag 'users')
+  - remove_user_from_group ↔ delete_deactivated_user  (cross-category tag 'users')
+  - get_application ↔ get_group  (cross-category tag 'get')
+  - get_application ↔ get_policy  (cross-category tag 'get')
+  - get_application ↔ get_policy_rule  (cross-category tag 'get')
+  - get_application ↔ get_user  (cross-category tag 'get')
+  - get_application ↔ get_user_profile_attributes  (cross-category tag 'get')
+  - get_group ↔ get_policy  (cross-category tag 'get')
+  - get_group ↔ get_policy_rule  (cross-category tag 'get')
+  - get_group ↔ get_user  (cross-category tag 'get')
+  - get_group ↔ get_user_profile_attributes  (cross-category tag 'get')
+  - get_policy ↔ get_user  (cross-category tag 'get')
+  - get_policy ↔ get_user_profile_attributes  (cross-category tag 'get')
+  - get_policy_rule ↔ get_user  (cross-category tag 'get')
+  - get_policy_rule ↔ get_user_profile_attributes  (cross-category tag 'get')
+  - get_application ↔ get_group  (cross-category tag 'lookup')
+  - get_application ↔ get_policy  (cross-category tag 'lookup')
+  - get_application ↔ get_policy_rule  (cross-category tag 'lookup')
+  - get_application ↔ get_user  (cross-category tag 'lookup')
+  - get_group ↔ get_policy  (cross-category tag 'lookup')
+  - get_group ↔ get_policy_rule  (cross-category tag 'lookup')
+  - get_group ↔ get_user  (cross-category tag 'lookup')
+  - get_policy ↔ get_user  (cross-category tag 'lookup')
+  - get_policy_rule ↔ get_user  (cross-category tag 'lookup')
+  - create_application ↔ create_group  (cross-category tag 'create')
+  - create_application ↔ create_policy  (cross-category tag 'create')
+  - create_application ↔ create_policy_rule  (cross-category tag 'create')
+  - create_application ↔ create_user  (cross-category tag 'create')
+  - create_group ↔ create_policy  (cross-category tag 'create')
+  - create_group ↔ create_policy_rule  (cross-category tag 'create')
+  - create_group ↔ create_user  (cross-category tag 'create')
+  - create_policy ↔ create_user  (cross-category tag 'create')
+  - create_policy_rule ↔ create_user  (cross-category tag 'create')
+  - update_application ↔ update_group  (cross-category tag 'update')
+  - update_application ↔ update_policy  (cross-category tag 'update')
+  - update_application ↔ update_policy_rule  (cross-category tag 'update')
+  - update_application ↔ update_user  (cross-category tag 'update')
+  - update_group ↔ update_policy  (cross-category tag 'update')
+  - update_group ↔ update_policy_rule  (cross-category tag 'update')
+  - update_group ↔ update_user  (cross-category tag 'update')
+  - update_policy ↔ update_user  (cross-category tag 'update')
+  - update_policy_rule ↔ update_user  (cross-category tag 'update')
+  - deactivate_application ↔ deactivate_policy  (cross-category tag 'deactivate')
+  - deactivate_application ↔ deactivate_policy_rule  (cross-category tag 'deactivate')
+  - deactivate_application ↔ deactivate_user  (cross-category tag 'deactivate')
+  - deactivate_policy ↔ deactivate_user  (cross-category tag 'deactivate')
+  - deactivate_policy_rule ↔ deactivate_user  (cross-category tag 'deactivate')
+  - delete_application ↔ delete_group  (cross-category tag 'lifecycle')
+  - activate_application ↔ delete_group  (cross-category tag 'lifecycle')
+  - deactivate_application ↔ delete_group  (cross-category tag 'lifecycle')
+  - delete_application ↔ delete_policy  (cross-category tag 'lifecycle')
+  - delete_application ↔ activate_policy  (cross-category tag 'lifecycle')
+  - delete_application ↔ deactivate_policy  (cross-category tag 'lifecycle')
+  - delete_application ↔ delete_policy_rule  (cross-category tag 'lifecycle')
+  - delete_application ↔ activate_policy_rule  (cross-category tag 'lifecycle')
+  - delete_application ↔ deactivate_policy_rule  (cross-category tag 'lifecycle')
+  - activate_application ↔ delete_policy  (cross-category tag 'lifecycle')
+  - activate_application ↔ activate_policy  (cross-category tag 'lifecycle')
+  - activate_application ↔ deactivate_policy  (cross-category tag 'lifecycle')
+  - activate_application ↔ delete_policy_rule  (cross-category tag 'lifecycle')
+  - activate_application ↔ activate_policy_rule  (cross-category tag 'lifecycle')
+  - activate_application ↔ deactivate_policy_rule  (cross-category tag 'lifecycle')
+  - deactivate_application ↔ delete_policy  (cross-category tag 'lifecycle')
+  - deactivate_application ↔ activate_policy  (cross-category tag 'lifecycle')
+  - deactivate_application ↔ deactivate_policy  (cross-category tag 'lifecycle')
+  - deactivate_application ↔ delete_policy_rule  (cross-category tag 'lifecycle')
+  - deactivate_application ↔ activate_policy_rule  (cross-category tag 'lifecycle')
+  - deactivate_application ↔ deactivate_policy_rule  (cross-category tag 'lifecycle')
+  - delete_application ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - delete_application ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - activate_application ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - activate_application ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - deactivate_application ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - deactivate_application ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - delete_group ↔ delete_policy  (cross-category tag 'lifecycle')
+  - delete_group ↔ activate_policy  (cross-category tag 'lifecycle')
+  - delete_group ↔ deactivate_policy  (cross-category tag 'lifecycle')
+  - delete_group ↔ delete_policy_rule  (cross-category tag 'lifecycle')
+  - delete_group ↔ activate_policy_rule  (cross-category tag 'lifecycle')
+  - delete_group ↔ deactivate_policy_rule  (cross-category tag 'lifecycle')
+  - delete_group ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - delete_group ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - delete_policy ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - delete_policy ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - activate_policy ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - activate_policy ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - deactivate_policy ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - deactivate_policy ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - delete_policy_rule ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - delete_policy_rule ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - activate_policy_rule ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - activate_policy_rule ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - deactivate_policy_rule ↔ deactivate_user  (cross-category tag 'lifecycle')
+  - deactivate_policy_rule ↔ delete_deactivated_user  (cross-category tag 'lifecycle')
+  - delete_application ↔ delete_group  (cross-category tag 'delete')
+  - delete_application ↔ confirm_delete_group  (cross-category tag 'delete')
+  - confirm_delete_application ↔ delete_group  (cross-category tag 'delete')
+  - confirm_delete_application ↔ confirm_delete_group  (cross-category tag 'delete')
+  - delete_application ↔ delete_policy  (cross-category tag 'delete')
+  - delete_application ↔ delete_policy_rule  (cross-category tag 'delete')
+  - confirm_delete_application ↔ delete_policy  (cross-category tag 'delete')
+  - confirm_delete_application ↔ delete_policy_rule  (cross-category tag 'delete')
+  - delete_application ↔ delete_deactivated_user  (cross-category tag 'delete')
+  - confirm_delete_application ↔ delete_deactivated_user  (cross-category tag 'delete')
+  - delete_group ↔ delete_policy  (cross-category tag 'delete')
+  - delete_group ↔ delete_policy_rule  (cross-category tag 'delete')
+  - confirm_delete_group ↔ delete_policy  (cross-category tag 'delete')
+  - confirm_delete_group ↔ delete_policy_rule  (cross-category tag 'delete')
+  - delete_group ↔ delete_deactivated_user  (cross-category tag 'delete')
+  - confirm_delete_group ↔ delete_deactivated_user  (cross-category tag 'delete')
+  - delete_policy ↔ delete_deactivated_user  (cross-category tag 'delete')
+  - delete_policy_rule ↔ delete_deactivated_user  (cross-category tag 'delete')
+  - list_applications ↔ list_group_apps  (cross-category tag 'applications')
+  - get_application ↔ list_group_apps  (cross-category tag 'applications')
+  - create_application ↔ list_group_apps  (cross-category tag 'applications')
+  - update_application ↔ list_group_apps  (cross-category tag 'applications')
+  - delete_application ↔ list_group_apps  (cross-category tag 'applications')
+  - confirm_delete_application ↔ list_group_apps  (cross-category tag 'applications')
+  - activate_application ↔ list_group_apps  (cross-category tag 'applications')
+  - deactivate_application ↔ list_group_apps  (cross-category tag 'applications')
+  - list_applications ↔ list_group_apps  (cross-category tag 'apps')
+  - get_application ↔ list_group_apps  (cross-category tag 'apps')
+  - create_application ↔ list_group_apps  (cross-category tag 'apps')
+  - update_application ↔ list_group_apps  (cross-category tag 'apps')
+  - delete_application ↔ list_group_apps  (cross-category tag 'apps')
+  - confirm_delete_application ↔ list_group_apps  (cross-category tag 'apps')
+  - activate_application ↔ list_group_apps  (cross-category tag 'apps')
+  - deactivate_application ↔ list_group_apps  (cross-category tag 'apps')
+  - confirm_delete_application ↔ confirm_delete_group  (cross-category tag 'confirm')
+  - confirm_delete_application ↔ confirm_delete_group  (cross-category tag 'deprecated')
+  - activate_application ↔ activate_policy  (cross-category tag 'activate')
+  - activate_application ↔ activate_policy_rule  (cross-category tag 'activate')
+
+## Tag Index
+
+  - **activate**: activate_application, activate_policy, activate_policy_rule
+  - **add**: add_user_to_group
+  - **applications**: list_applications, get_application, create_application, update_application, delete_application, confirm_delete_application, activate_application, deactivate_application, list_group_apps
+  - **apps**: list_applications, get_application, create_application, update_application, delete_application, confirm_delete_application, activate_application, deactivate_application, list_group_apps
+  - **attributes**: get_user_profile_attributes
+  - **audit**: get_logs
+  - **confirm**: confirm_delete_application, confirm_delete_group
+  - **create**: create_user, create_application, create_group, create_policy, create_policy_rule
+  - **deactivate**: deactivate_user, deactivate_application, deactivate_policy, deactivate_policy_rule
+  - **delete**: delete_deactivated_user, delete_application, confirm_delete_application, delete_group, confirm_delete_group, delete_policy, delete_policy_rule
+  - **deprecated**: confirm_delete_application, confirm_delete_group
+  - **events**: get_logs
+  - **get**: get_user, get_user_profile_attributes, get_application, get_group, get_policy, get_policy_rule
+  - **groups**: list_groups, get_group, create_group, update_group, delete_group, confirm_delete_group, list_group_users, list_group_apps, add_user_to_group, remove_user_from_group
+  - **lifecycle**: deactivate_user, delete_deactivated_user, delete_application, activate_application, deactivate_application, delete_group, delete_policy, activate_policy, deactivate_policy, delete_policy_rule, activate_policy_rule, deactivate_policy_rule
+  - **list**: list_users, list_applications, list_groups, list_group_users, list_group_apps, list_policies, list_policy_rules, get_logs
+  - **logs**: get_logs
+  - **lookup**: get_user, get_application, get_group, get_policy, get_policy_rule
+  - **membership**: list_group_users, list_group_apps, add_user_to_group, remove_user_from_group
+  - **pagination**: list_users, list_applications, list_groups, list_group_users, list_policies, get_logs
+  - **policies**: list_policies, get_policy, create_policy, update_policy, delete_policy, activate_policy, deactivate_policy, list_policy_rules, get_policy_rule, create_policy_rule, update_policy_rule, delete_policy_rule, activate_policy_rule, deactivate_policy_rule
+  - **profile**: list_users, get_user_profile_attributes
+  - **read**: list_users, get_user, get_user_profile_attributes, list_applications, get_application, list_groups, get_group, list_group_users, list_group_apps, list_policies, get_policy, list_policy_rules, get_policy_rule, get_logs
+  - **remove**: remove_user_from_group
+  - **rules**: list_policy_rules, get_policy_rule, create_policy_rule, update_policy_rule, delete_policy_rule, activate_policy_rule, deactivate_policy_rule
+  - **schema**: get_user_profile_attributes
+  - **search**: list_users, list_groups
+  - **system_logs**: get_logs
+  - **update**: update_user, update_application, update_group, update_policy, update_policy_rule
+  - **users**: list_users, get_user, get_user_profile_attributes, create_user, update_user, deactivate_user, delete_deactivated_user, list_group_users, add_user_to_group, remove_user_from_group
+  - **write**: create_user, update_user, deactivate_user, delete_deactivated_user, create_application, update_application, delete_application, confirm_delete_application, activate_application, deactivate_application, create_group, update_group, delete_group, confirm_delete_group, add_user_to_group, remove_user_from_group, create_policy, update_policy, delete_policy, activate_policy, deactivate_policy, create_policy_rule, update_policy_rule, delete_policy_rule, activate_policy_rule, deactivate_policy_rule

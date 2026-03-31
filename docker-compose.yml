@@ -31,3 +31,6 @@ services:
     volumes:
       - okta-keyring:/root/.local/share/python_keyring
       - ./logs:/app/logs
+
+volumes:
+  okta-keyring:
