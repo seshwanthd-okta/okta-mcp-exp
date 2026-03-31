@@ -42,6 +42,43 @@ WORKFLOW_REGISTRY: dict[str, dict] = {
         "required_params": ["user_identifier"],
         "scopes_needed": ["okta.users.manage", "okta.groups.manage"],
     },
+    "suspend_user": {
+        "action": "suspend",
+        "target_type": "user",
+        "description": (
+            "Suspend a user: find them, revoke all active sessions, "
+            "and suspend the account (reversible)"
+        ),
+        "keywords": [
+            "suspend.*user",
+            "lock.*out",
+            "revoke.*session",
+            "block.*user",
+            "temporarily.*disable",
+        ],
+        "builder": None,  # set after definition
+        "required_params": ["user_identifier"],
+        "scopes_needed": ["okta.users.manage", "okta.sessions.manage"],
+    },
+    "onboard_user": {
+        "action": "onboard",
+        "target_type": "user",
+        "description": (
+            "Onboard a user: find them, activate their account "
+            "(sends activation email), and report their current group memberships"
+        ),
+        "keywords": [
+            "onboard",
+            "activate.*user",
+            "provision.*user",
+            "welcome.*user",
+            "enable.*user",
+            "new.*employee",
+        ],
+        "builder": None,  # set after definition
+        "required_params": ["user_identifier"],
+        "scopes_needed": ["okta.users.manage", "okta.groups.read"],
+    },
 }
 
 
@@ -138,3 +175,108 @@ def build_offboard_user(user_identifier: str) -> Plan:
 
 # Wire builder into registry
 WORKFLOW_REGISTRY["offboard_user"]["builder"] = build_offboard_user
+
+
+# ---------------------------------------------------------------------------
+# Workflow: suspend_user
+# ---------------------------------------------------------------------------
+
+def build_suspend_user(user_identifier: str) -> Plan:
+    """Build a suspend-user plan.
+
+    Steps:
+      1. Look up the user by login/email/id
+      2. Revoke all active sessions (forces sign-out everywhere)
+      3. Suspend the user account (reversible — can unsuspend later)
+    """
+    logger.info(f"Building suspend_user plan for: {user_identifier}")
+
+    steps = [
+        Step(
+            number=1,
+            action="get_user",
+            params={"user_id": user_identifier},
+            description=f"Look up user '{user_identifier}'",
+        ),
+        Step(
+            number=2,
+            action="clear_user_sessions",
+            params={"user_id": "$step1.id", "keep_current": False},
+            description="Revoke all active sessions (sign out everywhere)",
+            is_destructive=True,
+        ),
+        Step(
+            number=3,
+            action="suspend_user",
+            params={"user_id": "$step1.id"},
+            description="Suspend the user account",
+            is_destructive=True,
+        ),
+    ]
+
+    return create_plan(
+        workflow_name="suspend_user",
+        description=(
+            f"Suspend user '{user_identifier}': "
+            "revoke all active sessions and suspend the account"
+        ),
+        steps=steps,
+    )
+
+
+# Wire builder into registry
+WORKFLOW_REGISTRY["suspend_user"]["builder"] = build_suspend_user
+
+
+# ---------------------------------------------------------------------------
+# Workflow: onboard_user
+# ---------------------------------------------------------------------------
+
+def build_onboard_user(user_identifier: str, send_email: bool = True) -> Plan:
+    """Build an onboard-user plan.
+
+    Steps:
+      1. Look up the user by login/email/id
+      2. Activate the user account (optionally sends activation email)
+      3. List current group memberships (informational — shows what they can access)
+    """
+    logger.info(f"Building onboard_user plan for: {user_identifier} (send_email={send_email})")
+
+    steps = [
+        Step(
+            number=1,
+            action="get_user",
+            params={"user_id": user_identifier},
+            description=f"Look up user '{user_identifier}'",
+        ),
+        Step(
+            number=2,
+            action="activate_user",
+            params={"user_id": "$step1.id", "send_email": send_email},
+            description=(
+                "Activate the user account"
+                + (" and send activation email" if send_email else " (no activation email)")
+            ),
+            is_destructive=False,
+        ),
+        Step(
+            number=3,
+            action="list_user_groups",
+            params={"user_id": "$step1.id"},
+            description="List current group memberships (shows what the user can access)",
+        ),
+    ]
+
+    return create_plan(
+        workflow_name="onboard_user",
+        description=(
+            f"Onboard user '{user_identifier}': activate account"
+            + (" with activation email" if send_email else "")
+            + " and report group memberships"
+        ),
+        steps=steps,
+    )
+
+
+# Wire builder into registry
+WORKFLOW_REGISTRY["onboard_user"]["builder"] = build_onboard_user

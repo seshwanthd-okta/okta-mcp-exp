@@ -437,10 +437,15 @@ def _get_dispatcher() -> dict:
         "list_users": _action_list_users,
         "get_user": _action_get_user,
         "deactivate_user": _action_deactivate_user,
+        "suspend_user": _action_suspend_user,
+        "activate_user": _action_activate_user,
+        "clear_user_sessions": _action_clear_user_sessions,
 
         # ── Groups ──
         "list_user_groups": _action_list_user_groups,
         "remove_user_from_group": _action_remove_user_from_group,
+        "add_user_to_group": _action_add_user_to_group,
+        "get_group": _action_get_group,
 
         # ── Applications ──
         "list_user_app_assignments": _action_list_user_app_assignments,
@@ -569,6 +574,113 @@ async def _action_list_user_app_assignments(params: dict, client) -> list:
     if err:
         raise RuntimeError(f"Okta API error listing app assignments for user {user_id}: {err}")
     return apps or []
+
+
+async def _action_suspend_user(params: dict, client) -> str:
+    """Suspend a user by ID. The user can be unsuspended later."""
+    user_id = params.get("user_id")
+    if not user_id:
+        raise ValueError("suspend_user requires 'user_id'")
+
+    result = await client.suspend_user(user_id)
+    err = result[-1] if isinstance(result, tuple) else None
+    if err:
+        raise RuntimeError(f"Okta API error suspending user {user_id}: {err}")
+    return f"User {user_id} suspended successfully"
+
+
+async def _action_activate_user(params: dict, client) -> Any:
+    """Activate a user account. Optionally send an activation email.
+
+    Params:
+        user_id (str): Okta user ID.
+        send_email (bool): Whether to send an activation email (default True).
+    """
+    user_id = params.get("user_id")
+    if not user_id:
+        raise ValueError("activate_user requires 'user_id'")
+
+    send_email = params.get("send_email", True)
+    if isinstance(send_email, str):
+        send_email = send_email.lower() not in ("false", "0", "no")
+
+    token, _, err = await client.activate_user(user_id, send_email=send_email)
+    if err:
+        raise RuntimeError(f"Okta API error activating user {user_id}: {err}")
+    return {
+        "status": "activated",
+        "user_id": user_id,
+        "activation_token": getattr(token, "activationToken", None) if token else None,
+    }
+
+
+async def _action_clear_user_sessions(params: dict, client) -> str:
+    """Revoke all active sessions for a user.
+
+    Params:
+        user_id (str): Okta user ID.
+        keep_current (bool): Whether to keep the current session (default False).
+    """
+    user_id = params.get("user_id")
+    if not user_id:
+        raise ValueError("clear_user_sessions requires 'user_id'")
+
+    keep_current = params.get("keep_current", False)
+    if isinstance(keep_current, str):
+        keep_current = keep_current.lower() in ("true", "1", "yes")
+
+    result = await client.clear_user_sessions(
+        user_id, query_params={"oauthTokens": True, "keepCurrent": keep_current}
+    )
+    err = result[-1] if isinstance(result, tuple) else None
+    if err:
+        raise RuntimeError(f"Okta API error clearing sessions for user {user_id}: {err}")
+    return f"All active sessions revoked for user {user_id}"
+
+
+async def _action_add_user_to_group(params: dict, client) -> str:
+    """Add a user to a group.
+
+    Params:
+        user_id (str): Okta user ID.
+        group_id (str): Okta group ID.
+    """
+    group_id = params.get("group_id")
+    user_id = params.get("user_id")
+    if not group_id or not user_id:
+        raise ValueError("add_user_to_group requires 'group_id' and 'user_id'")
+
+    result = await client.add_user_to_group(group_id, user_id)
+    err = result[-1] if isinstance(result, tuple) else None
+    if err:
+        raise RuntimeError(f"Okta API error adding user {user_id} to group {group_id}: {err}")
+    return f"User {user_id} added to group {group_id}"
+
+
+async def _action_get_group(params: dict, client) -> Any:
+    """Get a group by ID or name.
+
+    Params:
+        group_id (str): Okta group ID (preferred).
+        name (str): Group name (falls back to search if group_id not provided).
+    """
+    group_id = params.get("group_id")
+    if group_id:
+        group, _, err = await client.get_group(group_id)
+        if err:
+            raise RuntimeError(f"Okta API error fetching group {group_id}: {err}")
+        return group
+
+    name = params.get("name")
+    if not name:
+        raise ValueError("get_group requires 'group_id' or 'name'")
+
+    groups, _, err = await client.list_groups(query_params={"q": name})
+    if err:
+        raise RuntimeError(f"Okta API error searching for group '{name}': {err}")
+    if not groups:
+        raise RuntimeError(f"No group found matching '{name}'")
+    return groups[0]
 
 
 # ---------------------------------------------------------------------------

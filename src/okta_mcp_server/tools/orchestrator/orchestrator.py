@@ -51,6 +51,8 @@ async def orchestrator_query(
     Parameters:
         action (str, required): The operation to perform. Currently supported:
             - "offboard" — remove user from all groups and deactivate
+            - "suspend"  — revoke all active sessions and suspend the account
+            - "onboard"  — activate an account and report group memberships
             Use "list" to see all available workflows.
         target_type (str, required): The entity type. Currently supported: "user".
         target_identifier (str, required): The user's email, login, or Okta ID.
@@ -65,6 +67,8 @@ async def orchestrator_query(
 
     Example:
         orchestrator_query(action="offboard", target_type="user", target_identifier="john@acme.com")
+        orchestrator_query(action="suspend",  target_type="user", target_identifier="jane@acme.com")
+        orchestrator_query(action="onboard",  target_type="user", target_identifier="new.hire@acme.com")
     """
     logger.info(f"orchestrator_query: action='{action}', target_type='{target_type}', "
                 f"target_identifier='{target_identifier}', intent='{intent}'")
