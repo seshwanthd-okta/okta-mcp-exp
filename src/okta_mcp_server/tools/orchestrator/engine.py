@@ -470,14 +470,55 @@ async def _action_list_users(params: dict, client) -> list:
 
 
 async def _action_get_user(params: dict, client) -> Any:
-    """Get a single user by ID or login."""
+    """Get a single user by ID, login, or display name.
+
+    Tries a direct ``GET /users/{userId}`` first.  If the SDK returns ``None``
+    (e.g. the identifier is a display name rather than an Okta ID or email),
+    falls back to ``list_users?q=<identifier>`` and returns the first match.
+    """
     user_id = params.get("user_id") or params.get("login")
     if not user_id:
         raise ValueError("get_user requires 'user_id' or 'login'")
 
     user, _, err = await client.get_user(user_id)
-    if err:
-        raise RuntimeError(f"Okta API error getting user {user_id}: {err}")
+
+    # Direct lookup may silently return None when the identifier is a display
+    # name or partial name that Okta doesn't recognise as an ID/login.
+    if err or user is None:
+        logger.debug(
+            f"Direct lookup for '{user_id}' returned None/error — "
+            "falling back to list_users search"
+        )
+        users, _, search_err = await client.list_users(
+            query_params={"q": user_id, "limit": "5"}
+        )
+        if search_err:
+            raise RuntimeError(f"Okta API error finding user '{user_id}': {search_err}")
+        if not users:
+            raise RuntimeError(
+                f"No user found matching '{user_id}'. "
+                "Try providing the user's email or Okta user ID."
+            )
+        # If there are multiple matches, pick the one whose display name is
+        # closest to the query (exact first-name + last-name match preferred).
+        query_lower = user_id.strip().lower()
+        for candidate in users:
+            profile = getattr(candidate, "profile", None)
+            if profile:
+                full_name = (
+                    f"{getattr(profile, 'firstName', '')} "
+                    f"{getattr(profile, 'lastName', '')}".strip().lower()
+                )
+                if full_name == query_lower:
+                    logger.info(f"Resolved '{user_id}' → user id={candidate.id}")
+                    return candidate
+        # No exact match — return the first result and log a warning
+        logger.warning(
+            f"No exact display-name match for '{user_id}'; "
+            f"using first search result (id={users[0].id})"
+        )
+        return users[0]
+
     return user
 
 
