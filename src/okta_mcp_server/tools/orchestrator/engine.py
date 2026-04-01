@@ -625,16 +625,7 @@ async def _action_clear_user_sessions(params: dict, client) -> str:
     if not user_id:
         raise ValueError("clear_user_sessions requires 'user_id'")
 
-    keep_current = params.get("keep_current", False)
-    if isinstance(keep_current, str):
-        keep_current = keep_current.lower() in ("true", "1", "yes")
-
-    result = await client.clear_user_sessions(
-        user_id, query_params={"oauthTokens": True, "keepCurrent": keep_current}
-    )
-    err = result[-1] if isinstance(result, tuple) else None
-    if err:
-        raise RuntimeError(f"Okta API error clearing sessions for user {user_id}: {err}")
+    await client.revoke_user_sessions(user_id, oauth_tokens=True)
     return f"All active sessions revoked for user {user_id}"
 
 
