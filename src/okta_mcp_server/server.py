@@ -63,11 +63,20 @@ def main():
         sys.stderr, level=os.environ.get("OKTA_LOG_LEVEL", "INFO"), format="{time} {level} {message}", serialize=True
     )
 
-    logger.info("Starting Okta MCP Server — Orchestrator mode")
-    logger.info("LLM starts with 3 orchestrator tools: orchestrator_query, orchestrator_execute, orchestrator_context")
+    logger.info("Starting Okta MCP Server — Dynamic KG Orchestrator mode")
+    logger.info("LLM starts with 4 tools: query_graph, build_plan, execute, context")
 
-    # Register orchestrator tools at startup
-    from okta_mcp_server.tools.orchestrator import orchestrator  # noqa: F401
+    # Register KG-based orchestrator tools at startup
+    from okta_mcp_server.tools.orchestrator import orchestrator_kg  # noqa: F401
+    from okta_mcp_server.tools.orchestrator.knowledge_graph import get_knowledge_graph
+
+    # Eagerly build the knowledge graph so it's ready for the first query
+    kg = get_knowledge_graph()
+    stats = kg.get_stats()
+    logger.info(
+        f"Knowledge graph loaded: {stats['total_nodes']} tool nodes, "
+        f"{stats['total_edges']} edges"
+    )
 
     mcp.run()
 

@@ -436,19 +436,64 @@ def _get_dispatcher() -> dict:
         # ── Users ──
         "list_users": _action_list_users,
         "get_user": _action_get_user,
+        "create_user": _action_create_user,
+        "update_user": _action_update_user,
         "deactivate_user": _action_deactivate_user,
+        "delete_deactivated_user": _action_delete_deactivated_user,
         "suspend_user": _action_suspend_user,
         "activate_user": _action_activate_user,
         "clear_user_sessions": _action_clear_user_sessions,
+        "get_user_profile_attributes": _action_get_user_profile_attributes,
 
         # ── Groups ──
-        "list_user_groups": _action_list_user_groups,
-        "remove_user_from_group": _action_remove_user_from_group,
-        "add_user_to_group": _action_add_user_to_group,
+        "list_groups": _action_list_groups,
         "get_group": _action_get_group,
+        "create_group": _action_create_group,
+        "update_group": _action_update_group,
+        "delete_group": _action_delete_group,
+        "list_group_users": _action_list_group_users,
+        "list_group_apps": _action_list_group_apps,
+        "list_user_groups": _action_list_user_groups,
+        "add_user_to_group": _action_add_user_to_group,
+        "remove_user_from_group": _action_remove_user_from_group,
 
         # ── Applications ──
+        "list_applications": _action_list_applications,
+        "get_application": _action_get_application,
+        "create_application": _action_create_application,
+        "update_application": _action_update_application,
+        "delete_application": _action_delete_application,
+        "activate_application": _action_activate_application,
+        "deactivate_application": _action_deactivate_application,
         "list_user_app_assignments": _action_list_user_app_assignments,
+
+        # ── Policies ──
+        "list_policies": _action_list_policies,
+        "get_policy": _action_get_policy,
+        "create_policy": _action_create_policy,
+        "update_policy": _action_update_policy,
+        "delete_policy": _action_delete_policy,
+        "activate_policy": _action_activate_policy,
+        "deactivate_policy": _action_deactivate_policy,
+
+        # ── Policy Rules ──
+        "list_policy_rules": _action_list_policy_rules,
+        "get_policy_rule": _action_get_policy_rule,
+        "create_policy_rule": _action_create_policy_rule,
+        "update_policy_rule": _action_update_policy_rule,
+        "delete_policy_rule": _action_delete_policy_rule,
+        "activate_policy_rule": _action_activate_policy_rule,
+        "deactivate_policy_rule": _action_deactivate_policy_rule,
+
+        # ── Device Assurance ──
+        "list_device_assurance_policies": _action_list_device_assurance_policies,
+        "get_device_assurance_policy": _action_get_device_assurance_policy,
+        "create_device_assurance_policy": _action_create_device_assurance_policy,
+        "replace_device_assurance_policy": _action_replace_device_assurance_policy,
+        "delete_device_assurance_policy": _action_delete_device_assurance_policy,
+
+        # ── System Logs ──
+        "get_logs": _action_get_logs,
     }
 
 
@@ -672,6 +717,604 @@ async def _action_get_group(params: dict, client) -> Any:
     if not groups:
         raise RuntimeError(f"No group found matching '{name}'")
     return groups[0]
+
+
+# ---------------------------------------------------------------------------
+# Additional User action handlers
+# ---------------------------------------------------------------------------
+
+async def _action_create_user(params: dict, client) -> Any:
+    """Create a new user with the given profile."""
+    from okta.models.create_user_request import CreateUserRequest
+
+    profile = params.get("profile")
+
+    # If profile is not a dict, assemble it from individual top-level fields
+    if not isinstance(profile, dict):
+        profile_fields = ("firstName", "lastName", "email", "login")
+        assembled = {k: params[k] for k in profile_fields if k in params}
+        if assembled:
+            profile = assembled
+        elif not profile:
+            raise ValueError("create_user requires 'profile'")
+
+    user_data = CreateUserRequest.from_dict({"profile": profile})
+    user, _, err = await client.create_user(user_data)
+    if err:
+        raise RuntimeError(f"Okta API error creating user: {err}")
+    return user
+
+
+async def _action_update_user(params: dict, client) -> Any:
+    """Update an existing user's profile."""
+    from okta.models.update_user_request import UpdateUserRequest
+
+    user_id = params.get("user_id")
+    profile = params.get("profile")
+    if not user_id:
+        raise ValueError("update_user requires 'user_id'")
+    if not profile:
+        raise ValueError("update_user requires 'profile'")
+
+    user_data = UpdateUserRequest.from_dict({"profile": profile})
+    user, _, err = await client.update_user(user_id, user_data)
+    if err:
+        raise RuntimeError(f"Okta API error updating user {user_id}: {err}")
+    return user
+
+
+async def _action_delete_deactivated_user(params: dict, client) -> str:
+    """Permanently delete a deactivated user."""
+    user_id = params.get("user_id")
+    if not user_id:
+        raise ValueError("delete_deactivated_user requires 'user_id'")
+
+    result = await client.delete_user(user_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deleting user {user_id}: {err}")
+    return f"User {user_id} deleted successfully"
+
+
+async def _action_get_user_profile_attributes(params: dict, client) -> dict:
+    """List all user profile attributes supported by the Okta org."""
+    users, _, err = await client.list_users(limit=1)
+    if err:
+        raise RuntimeError(f"Okta API error fetching profile attributes: {err}")
+    if users and len(users) > 0:
+        return vars(users[0].profile)
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# Additional Group action handlers
+# ---------------------------------------------------------------------------
+
+async def _action_list_groups(params: dict, client) -> list:
+    """Search/list groups. Accepts 'search', 'filter', 'q', 'limit'."""
+    query = {}
+    if params.get("search"):
+        query["search"] = params["search"]
+    if params.get("filter"):
+        query["filter"] = params["filter"]
+    if params.get("q"):
+        query["q"] = params["q"]
+    if params.get("limit"):
+        query["limit"] = int(params["limit"])
+
+    groups, _, err = await client.list_groups(**query)
+    if err:
+        raise RuntimeError(f"Okta API error listing groups: {err}")
+    return groups or []
+
+
+async def _action_create_group(params: dict, client) -> Any:
+    """Create a new group with the given profile."""
+    profile = params.get("profile")
+    if not profile:
+        raise ValueError("create_group requires 'profile'")
+
+    group, _, err = await client.add_group({"profile": profile})
+    if err:
+        raise RuntimeError(f"Okta API error creating group: {err}")
+    return group
+
+
+async def _action_update_group(params: dict, client) -> Any:
+    """Update a group by ID with a new profile."""
+    group_id = params.get("group_id")
+    profile = params.get("profile")
+    if not group_id:
+        raise ValueError("update_group requires 'group_id'")
+    if not profile:
+        raise ValueError("update_group requires 'profile'")
+
+    group, _, err = await client.replace_group(group_id, {"profile": profile})
+    if err:
+        raise RuntimeError(f"Okta API error updating group {group_id}: {err}")
+    return group
+
+
+async def _action_delete_group(params: dict, client) -> str:
+    """Delete a group by ID."""
+    group_id = params.get("group_id")
+    if not group_id:
+        raise ValueError("delete_group requires 'group_id'")
+
+    result = await client.delete_group(group_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deleting group {group_id}: {err}")
+    return f"Group {group_id} deleted successfully"
+
+
+async def _action_list_group_users(params: dict, client) -> list:
+    """List all users in a group."""
+    group_id = params.get("group_id")
+    if not group_id:
+        raise ValueError("list_group_users requires 'group_id'")
+
+    users, _, err = await client.list_group_users(group_id)
+    if err:
+        raise RuntimeError(f"Okta API error listing users for group {group_id}: {err}")
+    return users or []
+
+
+async def _action_list_group_apps(params: dict, client) -> list:
+    """List all applications assigned to a group."""
+    group_id = params.get("group_id")
+    if not group_id:
+        raise ValueError("list_group_apps requires 'group_id'")
+
+    apps, _, err = await client.list_assigned_applications_for_group(group_id)
+    if err:
+        raise RuntimeError(f"Okta API error listing apps for group {group_id}: {err}")
+    return apps or []
+
+
+# ---------------------------------------------------------------------------
+# Application action handlers
+# ---------------------------------------------------------------------------
+
+async def _action_list_applications(params: dict, client) -> list:
+    """List applications. Accepts 'q', 'filter', 'limit', 'after', 'expand'."""
+    query = {}
+    for key in ("q", "filter", "after", "expand"):
+        if params.get(key):
+            query[key] = params[key]
+    if params.get("limit"):
+        query["limit"] = int(params["limit"])
+
+    apps, _, err = await client.list_applications(**query)
+    if err:
+        raise RuntimeError(f"Okta API error listing applications: {err}")
+    return apps or []
+
+
+async def _action_get_application(params: dict, client) -> Any:
+    """Get an application by ID."""
+    app_id = params.get("app_id")
+    if not app_id:
+        raise ValueError("get_application requires 'app_id'")
+
+    query = {}
+    if params.get("expand"):
+        query["expand"] = params["expand"]
+
+    app, _, err = await client.get_application(app_id, **query)
+    if err:
+        raise RuntimeError(f"Okta API error getting application {app_id}: {err}")
+    return app
+
+
+async def _action_create_application(params: dict, client) -> Any:
+    """Create a new application."""
+    import okta.models as okta_models
+
+    app_config = params.get("app_config")
+    if not app_config:
+        raise ValueError("create_application requires 'app_config'")
+
+    activate = params.get("activate", True)
+    sign_on_mode = app_config.get("signOnMode") or app_config.get("sign_on_mode", "")
+    mode_map = {
+        "BOOKMARK": okta_models.BookmarkApplication,
+        "AUTO_LOGIN": okta_models.AutoLoginApplication,
+        "BASIC_AUTH": okta_models.BasicAuthApplication,
+        "BROWSER_PLUGIN": okta_models.BrowserPluginApplication,
+        "OPENID_CONNECT": okta_models.OpenIdConnectApplication,
+        "SAML_1_1": okta_models.Saml11Application,
+        "SAML_2_0": okta_models.SamlApplication,
+        "SECURE_PASSWORD_STORE": okta_models.SecurePasswordStoreApplication,
+        "WS_FEDERATION": okta_models.WsFederationApplication,
+    }
+    model_cls = mode_map.get(str(sign_on_mode).upper(), okta_models.Application)
+    app_model = model_cls(**app_config)
+
+    app, _, err = await client.create_application(app_model, activate)
+    if err:
+        raise RuntimeError(f"Okta API error creating application: {err}")
+    return app
+
+
+async def _action_update_application(params: dict, client) -> Any:
+    """Update an application by ID."""
+    import okta.models as okta_models
+
+    app_id = params.get("app_id")
+    app_config = params.get("app_config")
+    if not app_id:
+        raise ValueError("update_application requires 'app_id'")
+    if not app_config:
+        raise ValueError("update_application requires 'app_config'")
+
+    sign_on_mode = app_config.get("signOnMode") or app_config.get("sign_on_mode", "")
+    mode_map = {
+        "BOOKMARK": okta_models.BookmarkApplication,
+        "AUTO_LOGIN": okta_models.AutoLoginApplication,
+        "BASIC_AUTH": okta_models.BasicAuthApplication,
+        "BROWSER_PLUGIN": okta_models.BrowserPluginApplication,
+        "OPENID_CONNECT": okta_models.OpenIdConnectApplication,
+        "SAML_1_1": okta_models.Saml11Application,
+        "SAML_2_0": okta_models.SamlApplication,
+        "SECURE_PASSWORD_STORE": okta_models.SecurePasswordStoreApplication,
+        "WS_FEDERATION": okta_models.WsFederationApplication,
+    }
+    model_cls = mode_map.get(str(sign_on_mode).upper(), okta_models.Application)
+    app_model = model_cls(**app_config)
+
+    app, _, err = await client.replace_application(app_id, app_model)
+    if err:
+        raise RuntimeError(f"Okta API error updating application {app_id}: {err}")
+    return app
+
+
+async def _action_delete_application(params: dict, client) -> str:
+    """Delete an application by ID."""
+    app_id = params.get("app_id")
+    if not app_id:
+        raise ValueError("delete_application requires 'app_id'")
+
+    result = await client.delete_application(app_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deleting application {app_id}: {err}")
+    return f"Application {app_id} deleted successfully"
+
+
+async def _action_activate_application(params: dict, client) -> str:
+    """Activate an application."""
+    app_id = params.get("app_id")
+    if not app_id:
+        raise ValueError("activate_application requires 'app_id'")
+
+    result = await client.activate_application(app_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error activating application {app_id}: {err}")
+    return f"Application {app_id} activated successfully"
+
+
+async def _action_deactivate_application(params: dict, client) -> str:
+    """Deactivate an application."""
+    app_id = params.get("app_id")
+    if not app_id:
+        raise ValueError("deactivate_application requires 'app_id'")
+
+    result = await client.deactivate_application(app_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deactivating application {app_id}: {err}")
+    return f"Application {app_id} deactivated successfully"
+
+
+# ---------------------------------------------------------------------------
+# Policy action handlers
+# ---------------------------------------------------------------------------
+
+async def _action_list_policies(params: dict, client) -> list:
+    """List policies by type."""
+    policy_type = params.get("type")
+    if not policy_type:
+        raise ValueError("list_policies requires 'type'")
+
+    query = {"type": policy_type}
+    if params.get("status"):
+        query["status"] = params["status"]
+    if params.get("q"):
+        query["q"] = params["q"]
+    if params.get("limit"):
+        query["limit"] = str(int(params["limit"]))
+
+    policies, _, err = await client.list_policies(**query)
+    if err:
+        raise RuntimeError(f"Okta API error listing policies: {err}")
+    return policies or []
+
+
+async def _action_get_policy(params: dict, client) -> Any:
+    """Retrieve a specific policy by ID."""
+    policy_id = params.get("policy_id")
+    if not policy_id:
+        raise ValueError("get_policy requires 'policy_id'")
+
+    policy, _, err = await client.get_policy(policy_id)
+    if err:
+        raise RuntimeError(f"Okta API error getting policy {policy_id}: {err}")
+    return policy
+
+
+async def _action_create_policy(params: dict, client) -> Any:
+    """Create a new policy."""
+    policy_data = params.get("policy_data")
+    if not policy_data:
+        raise ValueError("create_policy requires 'policy_data'")
+
+    policy, _, err = await client.create_policy(policy_data)
+    if err:
+        raise RuntimeError(f"Okta API error creating policy: {err}")
+    return policy
+
+
+async def _action_update_policy(params: dict, client) -> Any:
+    """Update an existing policy."""
+    policy_id = params.get("policy_id")
+    policy_data = params.get("policy_data")
+    if not policy_id:
+        raise ValueError("update_policy requires 'policy_id'")
+    if not policy_data:
+        raise ValueError("update_policy requires 'policy_data'")
+
+    policy, _, err = await client.replace_policy(policy_id, policy_data)
+    if err:
+        raise RuntimeError(f"Okta API error updating policy {policy_id}: {err}")
+    return policy
+
+
+async def _action_delete_policy(params: dict, client) -> str:
+    """Delete a policy."""
+    policy_id = params.get("policy_id")
+    if not policy_id:
+        raise ValueError("delete_policy requires 'policy_id'")
+
+    result = await client.delete_policy(policy_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deleting policy {policy_id}: {err}")
+    return f"Policy {policy_id} deleted successfully"
+
+
+async def _action_activate_policy(params: dict, client) -> str:
+    """Activate a policy."""
+    policy_id = params.get("policy_id")
+    if not policy_id:
+        raise ValueError("activate_policy requires 'policy_id'")
+
+    result = await client.activate_policy(policy_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error activating policy {policy_id}: {err}")
+    return f"Policy {policy_id} activated successfully"
+
+
+async def _action_deactivate_policy(params: dict, client) -> str:
+    """Deactivate a policy."""
+    policy_id = params.get("policy_id")
+    if not policy_id:
+        raise ValueError("deactivate_policy requires 'policy_id'")
+
+    result = await client.deactivate_policy(policy_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deactivating policy {policy_id}: {err}")
+    return f"Policy {policy_id} deactivated successfully"
+
+
+# ---------------------------------------------------------------------------
+# Policy Rule action handlers
+# ---------------------------------------------------------------------------
+
+async def _action_list_policy_rules(params: dict, client) -> list:
+    """List all rules for a policy."""
+    policy_id = params.get("policy_id")
+    if not policy_id:
+        raise ValueError("list_policy_rules requires 'policy_id'")
+
+    rules, _, err = await client.list_policy_rules(policy_id)
+    if err:
+        raise RuntimeError(f"Okta API error listing rules for policy {policy_id}: {err}")
+    return rules or []
+
+
+async def _action_get_policy_rule(params: dict, client) -> Any:
+    """Get a specific policy rule."""
+    policy_id = params.get("policy_id")
+    rule_id = params.get("rule_id")
+    if not policy_id:
+        raise ValueError("get_policy_rule requires 'policy_id'")
+    if not rule_id:
+        raise ValueError("get_policy_rule requires 'rule_id'")
+
+    rule, _, err = await client.get_policy_rule(policy_id, rule_id)
+    if err:
+        raise RuntimeError(f"Okta API error getting rule {rule_id}: {err}")
+    return rule
+
+
+async def _action_create_policy_rule(params: dict, client) -> Any:
+    """Create a new rule for a policy."""
+    from okta.models.policy_rule import PolicyRule
+
+    policy_id = params.get("policy_id")
+    rule_data = params.get("rule_data")
+    if not policy_id:
+        raise ValueError("create_policy_rule requires 'policy_id'")
+    if not rule_data:
+        raise ValueError("create_policy_rule requires 'rule_data'")
+
+    policy_rule = PolicyRule.from_dict(rule_data)
+    rule, _, err = await client.create_policy_rule(policy_id, policy_rule)
+    if err:
+        raise RuntimeError(f"Okta API error creating rule for policy {policy_id}: {err}")
+    return rule
+
+
+async def _action_update_policy_rule(params: dict, client) -> Any:
+    """Update an existing policy rule."""
+    from okta.models.policy_rule import PolicyRule
+
+    policy_id = params.get("policy_id")
+    rule_id = params.get("rule_id")
+    rule_data = params.get("rule_data")
+    if not policy_id:
+        raise ValueError("update_policy_rule requires 'policy_id'")
+    if not rule_id:
+        raise ValueError("update_policy_rule requires 'rule_id'")
+    if not rule_data:
+        raise ValueError("update_policy_rule requires 'rule_data'")
+
+    policy_rule = PolicyRule.from_dict(rule_data)
+    rule, _, err = await client.replace_policy_rule(policy_id, rule_id, policy_rule)
+    if err:
+        raise RuntimeError(f"Okta API error updating rule {rule_id}: {err}")
+    return rule
+
+
+async def _action_delete_policy_rule(params: dict, client) -> str:
+    """Delete a policy rule."""
+    policy_id = params.get("policy_id")
+    rule_id = params.get("rule_id")
+    if not policy_id:
+        raise ValueError("delete_policy_rule requires 'policy_id'")
+    if not rule_id:
+        raise ValueError("delete_policy_rule requires 'rule_id'")
+
+    result = await client.delete_policy_rule(policy_id, rule_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deleting rule {rule_id}: {err}")
+    return f"Rule {rule_id} deleted successfully"
+
+
+async def _action_activate_policy_rule(params: dict, client) -> str:
+    """Activate a policy rule."""
+    policy_id = params.get("policy_id")
+    rule_id = params.get("rule_id")
+    if not policy_id:
+        raise ValueError("activate_policy_rule requires 'policy_id'")
+    if not rule_id:
+        raise ValueError("activate_policy_rule requires 'rule_id'")
+
+    result = await client.activate_policy_rule(policy_id, rule_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error activating rule {rule_id}: {err}")
+    return f"Rule {rule_id} activated successfully"
+
+
+async def _action_deactivate_policy_rule(params: dict, client) -> str:
+    """Deactivate a policy rule."""
+    policy_id = params.get("policy_id")
+    rule_id = params.get("rule_id")
+    if not policy_id:
+        raise ValueError("deactivate_policy_rule requires 'policy_id'")
+    if not rule_id:
+        raise ValueError("deactivate_policy_rule requires 'rule_id'")
+
+    result = await client.deactivate_policy_rule(policy_id, rule_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deactivating rule {rule_id}: {err}")
+    return f"Rule {rule_id} deactivated successfully"
+
+
+# ---------------------------------------------------------------------------
+# Device Assurance action handlers
+# ---------------------------------------------------------------------------
+
+async def _action_list_device_assurance_policies(params: dict, client) -> list:
+    """List all device assurance policies."""
+    policies, _, err = await client.list_device_assurance_policies()
+    if err:
+        raise RuntimeError(f"Okta API error listing device assurance policies: {err}")
+    return policies or []
+
+
+async def _action_get_device_assurance_policy(params: dict, client) -> Any:
+    """Get a device assurance policy by ID."""
+    device_assurance_id = params.get("device_assurance_id")
+    if not device_assurance_id:
+        raise ValueError("get_device_assurance_policy requires 'device_assurance_id'")
+
+    policy, _, err = await client.get_device_assurance_policy(device_assurance_id)
+    if err:
+        raise RuntimeError(f"Okta API error getting device assurance policy {device_assurance_id}: {err}")
+    return policy
+
+
+async def _action_create_device_assurance_policy(params: dict, client) -> Any:
+    """Create a new device assurance policy."""
+    from okta.models.device_assurance import DeviceAssurance
+
+    policy_data = params.get("policy_data")
+    if not policy_data:
+        raise ValueError("create_device_assurance_policy requires 'policy_data'")
+
+    policy_model = DeviceAssurance.from_dict(policy_data)
+    policy, _, err = await client.create_device_assurance_policy(policy_model)
+    if err:
+        raise RuntimeError(f"Okta API error creating device assurance policy: {err}")
+    return policy
+
+
+async def _action_replace_device_assurance_policy(params: dict, client) -> Any:
+    """Replace an existing device assurance policy."""
+    from okta.models.device_assurance import DeviceAssurance
+
+    device_assurance_id = params.get("device_assurance_id")
+    policy_data = params.get("policy_data")
+    if not device_assurance_id:
+        raise ValueError("replace_device_assurance_policy requires 'device_assurance_id'")
+    if not policy_data:
+        raise ValueError("replace_device_assurance_policy requires 'policy_data'")
+
+    policy_model = DeviceAssurance.from_dict(policy_data)
+    policy, _, err = await client.replace_device_assurance_policy(device_assurance_id, policy_model)
+    if err:
+        raise RuntimeError(f"Okta API error replacing device assurance policy {device_assurance_id}: {err}")
+    return policy
+
+
+async def _action_delete_device_assurance_policy(params: dict, client) -> str:
+    """Delete a device assurance policy."""
+    device_assurance_id = params.get("device_assurance_id")
+    if not device_assurance_id:
+        raise ValueError("delete_device_assurance_policy requires 'device_assurance_id'")
+
+    result = await client.delete_device_assurance_policy(device_assurance_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deleting device assurance policy {device_assurance_id}: {err}")
+    return f"Device assurance policy {device_assurance_id} deleted successfully"
+
+
+# ---------------------------------------------------------------------------
+# System Logs action handler
+# ---------------------------------------------------------------------------
+
+async def _action_get_logs(params: dict, client) -> list:
+    """Retrieve system logs. Accepts 'since', 'until', 'filter', 'q', 'limit'."""
+    query = {}
+    for key in ("since", "until", "filter", "q", "after"):
+        if params.get(key):
+            query[key] = params[key]
+    if params.get("limit"):
+        query["limit"] = int(params["limit"])
+
+    logs, _, err = await client.list_log_events(**query)
+    if err:
+        raise RuntimeError(f"Okta API error retrieving system logs: {err}")
+    return logs or []
 
 
 # ---------------------------------------------------------------------------
