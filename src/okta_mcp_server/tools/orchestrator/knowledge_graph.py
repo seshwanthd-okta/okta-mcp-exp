@@ -1036,7 +1036,7 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         entity_type=EntityType.THEME,
         operation=OperationType.WRITE,
         description="Replace (update) a theme for a brand",
-        required_params=["brand_id", "theme_id", "theme_data"],
+        required_params=["brand_id", "theme_id"],
         outputs=["id"],
         tags=["update", "modify", "customization"],
     ))
@@ -1545,6 +1545,35 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
             source_output="id",
             target_param="brand_id",
             description=f"Brand ID from lookup feeds into {target}",
+        ))
+
+    # list_brands → brand-dependent operations (when list_brands returns a single brand object)
+    for target in [
+        "get_brand", "replace_brand", "delete_brand", "list_brand_domains",
+        "list_brand_themes",
+    ]:
+        kg.add_edge(Edge(
+            source="list_brands",
+            target=target,
+            source_output="id",
+            target_param="brand_id",
+            description=f"Brand ID from list_brands search feeds into {target}",
+        ))
+
+    # list_brand_themes → theme operations (when list_brand_themes returns a single theme object)
+    for target in [
+        "get_brand_theme",
+        "replace_brand_theme",
+        "upload_brand_theme_logo", "delete_brand_theme_logo",
+        "upload_brand_theme_favicon", "delete_brand_theme_favicon",
+        "upload_brand_theme_background_image", "delete_brand_theme_background_image",
+    ]:
+        kg.add_edge(Edge(
+            source="list_brand_themes",
+            target=target,
+            source_output="id",
+            target_param="theme_id",
+            description=f"Theme ID from list_brand_themes feeds into {target}",
         ))
 
     # get_brand_theme → theme operations that need brand_id + theme_id

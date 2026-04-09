@@ -26,6 +26,7 @@ from typing import Any
 from loguru import logger
 
 from okta_mcp_server.utils.client import get_okta_client
+from okta_mcp_server.utils.pagination import paginate_all_results
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +495,43 @@ def _get_dispatcher() -> dict:
 
         # ── System Logs ──
         "get_logs": _action_get_logs,
+
+        # ── Brands ──
+        "list_brands": _action_list_brands,
+        "get_brand": _action_get_brand,
+        "create_brand": _action_create_brand,
+        "replace_brand": _action_replace_brand,
+        "delete_brand": _action_delete_brand,
+        "list_brand_domains": _action_list_brand_domains,
+
+        # ── Themes ──
+        "list_brand_themes": _action_list_brand_themes,
+        "get_brand_theme": _action_get_brand_theme,
+        "replace_brand_theme": _action_replace_brand_theme,
     }
+
+
+# ---------------------------------------------------------------------------
+# Pagination helper for action handlers
+# ---------------------------------------------------------------------------
+
+async def _auto_paginate(items, response) -> list:
+    """Auto-paginate through all pages of Okta SDK results.
+
+    If the response indicates more pages, uses ``paginate_all_results``
+    to fetch every page so the orchestrator always returns the full
+    result set without artificial limits.
+    """
+    if not items:
+        return []
+    if response and hasattr(response, "has_next") and response.has_next():
+        all_items, info = await paginate_all_results(response, items)
+        logger.debug(
+            f"Auto-paginated: {info['total_items']} items across "
+            f"{info['pages_fetched']} pages"
+        )
+        return all_items
+    return list(items)
 
 
 # ---------------------------------------------------------------------------
@@ -513,10 +550,10 @@ async def _action_list_users(params: dict, client) -> list:
     if params.get("limit"):
         query["limit"] = int(params["limit"])
 
-    users, _, err = await client.list_users(**query)
+    users, resp, err = await client.list_users(**query)
     if err:
         raise RuntimeError(f"Okta API error listing users: {err}")
-    return users or []
+    return await _auto_paginate(users, resp)
 
 
 async def _action_get_user(params: dict, client) -> Any:
@@ -589,10 +626,10 @@ async def _action_list_user_groups(params: dict, client) -> list:
     if not user_id:
         raise ValueError("list_user_groups requires 'user_id'")
 
-    groups, _, err = await client.list_user_groups(user_id)
+    groups, resp, err = await client.list_user_groups(user_id)
     if err:
         raise RuntimeError(f"Okta API error listing groups for user {user_id}: {err}")
-    return groups or []
+    return await _auto_paginate(groups, resp)
 
 
 async def _action_remove_user_from_group(params: dict, client) -> str:
@@ -615,10 +652,10 @@ async def _action_list_user_app_assignments(params: dict, client) -> list:
     if not user_id:
         raise ValueError("list_user_app_assignments requires 'user_id'")
 
-    apps, _, err = await client.list_app_links(user_id)
+    apps, resp, err = await client.list_app_links(user_id)
     if err:
         raise RuntimeError(f"Okta API error listing app assignments for user {user_id}: {err}")
-    return apps or []
+    return await _auto_paginate(apps, resp)
 
 
 async def _action_suspend_user(params: dict, client) -> str:
@@ -802,10 +839,10 @@ async def _action_list_groups(params: dict, client) -> list:
     if params.get("limit"):
         query["limit"] = int(params["limit"])
 
-    groups, _, err = await client.list_groups(**query)
+    groups, resp, err = await client.list_groups(**query)
     if err:
         raise RuntimeError(f"Okta API error listing groups: {err}")
-    return groups or []
+    return await _auto_paginate(groups, resp)
 
 
 async def _action_create_group(params: dict, client) -> Any:
@@ -854,10 +891,10 @@ async def _action_list_group_users(params: dict, client) -> list:
     if not group_id:
         raise ValueError("list_group_users requires 'group_id'")
 
-    users, _, err = await client.list_group_users(group_id)
+    users, resp, err = await client.list_group_users(group_id)
     if err:
         raise RuntimeError(f"Okta API error listing users for group {group_id}: {err}")
-    return users or []
+    return await _auto_paginate(users, resp)
 
 
 async def _action_list_group_apps(params: dict, client) -> list:
@@ -866,10 +903,10 @@ async def _action_list_group_apps(params: dict, client) -> list:
     if not group_id:
         raise ValueError("list_group_apps requires 'group_id'")
 
-    apps, _, err = await client.list_assigned_applications_for_group(group_id)
+    apps, resp, err = await client.list_assigned_applications_for_group(group_id)
     if err:
         raise RuntimeError(f"Okta API error listing apps for group {group_id}: {err}")
-    return apps or []
+    return await _auto_paginate(apps, resp)
 
 
 # ---------------------------------------------------------------------------
@@ -885,10 +922,10 @@ async def _action_list_applications(params: dict, client) -> list:
     if params.get("limit"):
         query["limit"] = int(params["limit"])
 
-    apps, _, err = await client.list_applications(**query)
+    apps, resp, err = await client.list_applications(**query)
     if err:
         raise RuntimeError(f"Okta API error listing applications: {err}")
-    return apps or []
+    return await _auto_paginate(apps, resp)
 
 
 async def _action_get_application(params: dict, client) -> Any:
@@ -1026,10 +1063,10 @@ async def _action_list_policies(params: dict, client) -> list:
     if params.get("limit"):
         query["limit"] = str(int(params["limit"]))
 
-    policies, _, err = await client.list_policies(**query)
+    policies, resp, err = await client.list_policies(**query)
     if err:
         raise RuntimeError(f"Okta API error listing policies: {err}")
-    return policies or []
+    return await _auto_paginate(policies, resp)
 
 
 async def _action_get_policy(params: dict, client) -> Any:
@@ -1120,10 +1157,10 @@ async def _action_list_policy_rules(params: dict, client) -> list:
     if not policy_id:
         raise ValueError("list_policy_rules requires 'policy_id'")
 
-    rules, _, err = await client.list_policy_rules(policy_id)
+    rules, resp, err = await client.list_policy_rules(policy_id)
     if err:
         raise RuntimeError(f"Okta API error listing rules for policy {policy_id}: {err}")
-    return rules or []
+    return await _auto_paginate(rules, resp)
 
 
 async def _action_get_policy_rule(params: dict, client) -> Any:
@@ -1234,10 +1271,10 @@ async def _action_deactivate_policy_rule(params: dict, client) -> str:
 
 async def _action_list_device_assurance_policies(params: dict, client) -> list:
     """List all device assurance policies."""
-    policies, _, err = await client.list_device_assurance_policies()
+    policies, resp, err = await client.list_device_assurance_policies()
     if err:
         raise RuntimeError(f"Okta API error listing device assurance policies: {err}")
-    return policies or []
+    return await _auto_paginate(policies, resp)
 
 
 async def _action_get_device_assurance_policy(params: dict, client) -> Any:
@@ -1311,10 +1348,255 @@ async def _action_get_logs(params: dict, client) -> list:
     if params.get("limit"):
         query["limit"] = int(params["limit"])
 
-    logs, _, err = await client.list_log_events(**query)
+    logs, resp, err = await client.list_log_events(**query)
     if err:
         raise RuntimeError(f"Okta API error retrieving system logs: {err}")
-    return logs or []
+    return await _auto_paginate(logs, resp)
+
+
+# ---------------------------------------------------------------------------
+# Brand action handlers
+# ---------------------------------------------------------------------------
+
+async def _action_list_brands(params: dict, client) -> Any:
+    """List brands. When a name query is given and matches exactly one brand,
+    returns that brand object directly so downstream steps can reference its ID.
+    """
+    query = {}
+    name = params.get("name") or params.get("q")
+    if name:
+        query["q"] = name
+    if params.get("limit"):
+        query["limit"] = int(params["limit"])
+
+    brands, resp, err = await client.list_brands(**query)
+    if err:
+        raise RuntimeError(f"Okta API error listing brands: {err}")
+    brands = await _auto_paginate(brands, resp)
+
+    if name:
+        # Prefer exact case-insensitive name match
+        exact = [b for b in brands if getattr(b, "name", "").lower() == name.lower()]
+        if exact:
+            return exact[0]
+        if len(brands) == 1:
+            return brands[0]
+
+    return brands
+
+
+async def _action_get_brand(params: dict, client) -> Any:
+    """Get a brand by ID."""
+    brand_id = params.get("brand_id")
+    if not brand_id:
+        raise ValueError("get_brand requires 'brand_id'")
+
+    brand, _, err = await client.get_brand(brand_id)
+    if err:
+        raise RuntimeError(f"Okta API error getting brand {brand_id}: {err}")
+    return brand
+
+
+async def _action_create_brand(params: dict, client) -> Any:
+    """Create a new brand with the given name."""
+    from okta.models.create_brand_request import CreateBrandRequest
+
+    name = params.get("name")
+    if not name:
+        raise ValueError("create_brand requires 'name'")
+
+    create_request = CreateBrandRequest(name=name)
+    brand, _, err = await client.create_brand(create_request)
+    if err:
+        raise RuntimeError(f"Okta API error creating brand '{name}': {err}")
+    return brand
+
+
+async def _action_replace_brand(params: dict, client) -> Any:
+    """Replace (update) a brand by ID."""
+    from okta.models.brand_request import BrandRequest
+
+    brand_id = params.get("brand_id")
+    if not brand_id:
+        raise ValueError("replace_brand requires 'brand_id'")
+
+    brand_data = params.get("brand_data") or {}
+    name = brand_data.get("name") or params.get("name")
+    if not name:
+        raise ValueError("replace_brand requires 'name'")
+
+    brand_request = BrandRequest(name=name)
+    brand, _, err = await client.replace_brand(brand_id, brand_request)
+    if err:
+        raise RuntimeError(f"Okta API error replacing brand {brand_id}: {err}")
+    return brand
+
+
+async def _action_delete_brand(params: dict, client) -> str:
+    """Delete a brand by ID."""
+    brand_id = params.get("brand_id")
+    if not brand_id:
+        raise ValueError("delete_brand requires 'brand_id'")
+
+    result = await client.delete_brand(brand_id)
+    err = result[-1]
+    if err:
+        raise RuntimeError(f"Okta API error deleting brand {brand_id}: {err}")
+    return f"Brand {brand_id} deleted successfully"
+
+
+async def _action_list_brand_domains(params: dict, client) -> list:
+    """List all custom domains associated with a brand."""
+    brand_id = params.get("brand_id")
+    if not brand_id:
+        raise ValueError("list_brand_domains requires 'brand_id'")
+
+    domains, resp, err = await client.list_brand_domains(brand_id)
+    if err:
+        raise RuntimeError(f"Okta API error listing domains for brand {brand_id}: {err}")
+    return await _auto_paginate(domains, resp)
+
+
+# ---------------------------------------------------------------------------
+# Theme action handlers
+# ---------------------------------------------------------------------------
+
+async def _action_list_brand_themes(params: dict, client) -> Any:
+    """List themes for a brand. Since each brand has exactly one theme,
+    returns the single theme object directly so its ID can be referenced.
+    """
+    brand_id = params.get("brand_id")
+    if not brand_id:
+        raise ValueError("list_brand_themes requires 'brand_id'")
+
+    themes, resp, err = await client.list_brand_themes(brand_id)
+    if err:
+        raise RuntimeError(f"Okta API error listing themes for brand {brand_id}: {err}")
+    themes = await _auto_paginate(themes, resp)
+
+    # Each org has exactly one theme per brand — return it directly
+    if len(themes) == 1:
+        return themes[0]
+    return themes
+
+
+async def _action_get_brand_theme(params: dict, client) -> Any:
+    """Get a specific theme by brand ID and theme ID."""
+    brand_id = params.get("brand_id")
+    theme_id = params.get("theme_id")
+    if not brand_id:
+        raise ValueError("get_brand_theme requires 'brand_id'")
+    if not theme_id:
+        raise ValueError("get_brand_theme requires 'theme_id'")
+
+    theme, _, err = await client.get_brand_theme(brand_id, theme_id)
+    if err:
+        raise RuntimeError(f"Okta API error getting theme {theme_id} for brand {brand_id}: {err}")
+    return theme
+
+
+async def _action_replace_brand_theme(params: dict, client) -> Any:
+    """Replace a theme's colours and touchpoint variants.
+
+    Accepts a 'theme_data' dict and/or individual colour/variant fields.
+    Missing required fields are auto-filled from the current theme so that
+    callers only need to specify the fields they want to change.
+    """
+    from okta.models.update_theme_request import UpdateThemeRequest
+    from okta.models.sign_in_page_touch_point_variant import SignInPageTouchPointVariant
+    from okta.models.end_user_dashboard_touch_point_variant import EndUserDashboardTouchPointVariant
+    from okta.models.error_page_touch_point_variant import ErrorPageTouchPointVariant
+    from okta.models.email_template_touch_point_variant import EmailTemplateTouchPointVariant
+    from okta.models.loading_page_touch_point_variant import LoadingPageTouchPointVariant
+
+    brand_id = params.get("brand_id")
+    theme_id = params.get("theme_id")
+    if not brand_id:
+        raise ValueError("replace_brand_theme requires 'brand_id'")
+    if not theme_id:
+        raise ValueError("replace_brand_theme requires 'theme_id'")
+
+    # Merge theme_data dict with individual top-level params
+    merged: dict = dict(params.get("theme_data") or {})
+    for key in (
+        "primaryColorHex", "primary_color_hex",
+        "secondaryColorHex", "secondary_color_hex",
+        "primaryColorContrastHex", "primary_color_contrast_hex",
+        "secondaryColorContrastHex", "secondary_color_contrast_hex",
+        "signInPageTouchPointVariant", "sign_in_page_touch_point_variant",
+        "endUserDashboardTouchPointVariant", "end_user_dashboard_touch_point_variant",
+        "errorPageTouchPointVariant", "error_page_touch_point_variant",
+        "emailTemplateTouchPointVariant", "email_template_touch_point_variant",
+        "loadingPageTouchPointVariant", "loading_page_touch_point_variant",
+    ):
+        if params.get(key) is not None:
+            merged[key] = params[key]
+
+    def _get(*keys):
+        for k in keys:
+            v = merged.get(k)
+            if v is not None:
+                return v
+        return None
+
+    primary = _get("primary_color_hex", "primaryColorHex")
+    secondary = _get("secondary_color_hex", "secondaryColorHex")
+    sign_in = _get("sign_in_page_touch_point_variant", "signInPageTouchPointVariant")
+    dashboard = _get("end_user_dashboard_touch_point_variant", "endUserDashboardTouchPointVariant")
+    error_page = _get("error_page_touch_point_variant", "errorPageTouchPointVariant")
+    email = _get("email_template_touch_point_variant", "emailTemplateTouchPointVariant")
+    loading = _get("loading_page_touch_point_variant", "loadingPageTouchPointVariant")
+    primary_contrast = _get("primary_color_contrast_hex", "primaryColorContrastHex")
+    secondary_contrast = _get("secondary_color_contrast_hex", "secondaryColorContrastHex")
+
+    # Fetch current theme to fill in any missing required fields
+    needs_current = not all([primary, secondary, sign_in, dashboard, error_page, email])
+    current_theme = None
+    if needs_current:
+        current_theme, _, err = await client.get_brand_theme(brand_id, theme_id)
+        if err:
+            raise RuntimeError(f"Okta API error fetching current theme {theme_id}: {err}")
+
+    def _from_current(camel_attr, snake_attr, default=None):
+        if current_theme:
+            val = getattr(current_theme, camel_attr, None) or getattr(current_theme, snake_attr, None)
+            if val is not None:
+                return val.value if hasattr(val, "value") else val
+        return default
+
+    if not primary:
+        primary = _from_current("primaryColorHex", "primary_color_hex", "#1662dd")
+    if not secondary:
+        secondary = _from_current("secondaryColorHex", "secondary_color_hex", "#ebebed")
+    if not sign_in:
+        sign_in = _from_current("signInPageTouchPointVariant", "sign_in_page_touch_point_variant", "OKTA_DEFAULT")
+    if not dashboard:
+        dashboard = _from_current("endUserDashboardTouchPointVariant", "end_user_dashboard_touch_point_variant", "OKTA_DEFAULT")
+    if not error_page:
+        error_page = _from_current("errorPageTouchPointVariant", "error_page_touch_point_variant", "OKTA_DEFAULT")
+    if not email:
+        email = _from_current("emailTemplateTouchPointVariant", "email_template_touch_point_variant", "OKTA_DEFAULT")
+
+    request_data = {
+        "primary_color_hex": primary,
+        "secondary_color_hex": secondary,
+        "sign_in_page_touch_point_variant": SignInPageTouchPointVariant(str(sign_in).upper()),
+        "end_user_dashboard_touch_point_variant": EndUserDashboardTouchPointVariant(str(dashboard).upper()),
+        "error_page_touch_point_variant": ErrorPageTouchPointVariant(str(error_page).upper()),
+        "email_template_touch_point_variant": EmailTemplateTouchPointVariant(str(email).upper()),
+    }
+    if primary_contrast:
+        request_data["primary_color_contrast_hex"] = primary_contrast
+    if secondary_contrast:
+        request_data["secondary_color_contrast_hex"] = secondary_contrast
+    if loading:
+        request_data["loading_page_touch_point_variant"] = LoadingPageTouchPointVariant(str(loading).upper())
+
+    theme_request = UpdateThemeRequest(**request_data)
+    theme, _, err = await client.replace_brand_theme(brand_id, theme_id, theme_request)
+    if err:
+        raise RuntimeError(f"Okta API error replacing theme {theme_id}: {err}")
+    return theme
 
 
 # ---------------------------------------------------------------------------

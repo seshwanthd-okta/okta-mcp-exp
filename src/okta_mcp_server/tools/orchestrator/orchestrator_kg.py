@@ -206,12 +206,17 @@ async def orchestrator_build_plan(
         for param in first_node.required_params:
             step_dicts[0]["params"][param] = target_identifier
 
-    # Parse and apply extra_params
+    # Parse extra_params and distribute them to every step so that each handler
+    # can pick up the fields it needs (e.g. q= for list_brands, primaryColorHex=
+    # for replace_brand_theme).  Handlers simply ignore params they don't use.
     if extra_params:
+        extra: dict = {}
         for pair in extra_params.split(","):
             if "=" in pair:
                 k, v = pair.split("=", 1)
-                step_dicts[0]["params"][k.strip()] = v.strip()
+                extra[k.strip()] = v.strip()
+        for step_dict in step_dicts:
+            step_dict["params"].update(extra)
 
     # Build engine Steps
     steps = [
