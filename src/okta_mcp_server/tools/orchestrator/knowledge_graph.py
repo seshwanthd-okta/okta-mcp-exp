@@ -75,6 +75,9 @@ class ToolNode:
     is_destructive: bool = False
     is_iterable: bool = False                 # can operate over a list (for_each)
     tags: list[str] = field(default_factory=list)  # free-form labels for searching
+    # Planning semantics for CSP solver
+    preconditions: dict[str, str] = field(default_factory=dict)  # state required before execution
+    effects: dict[str, str] = field(default_factory=dict)        # state changes after execution
 
 
 @dataclass
@@ -331,6 +334,8 @@ class OktaKnowledgeGraph:
             "is_destructive": node.is_destructive,
             "is_iterable": node.is_iterable,
             "tags": node.tags,
+            "preconditions": node.preconditions,
+            "effects": node.effects,
         }
 
     @staticmethod
@@ -367,6 +372,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["user_id"],
         outputs=["id", "profile", "status"],
         tags=["lookup", "identity", "resolve"],
+        preconditions={"user.identifier": "PROVIDED"},
+        effects={"user.id": "KNOWN", "user.status": "KNOWN", "user.profile": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="list_users",
@@ -377,6 +384,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["search", "filter", "q", "limit"],
         outputs=["items"],
         tags=["search", "bulk", "filter"],
+        preconditions={},
+        effects={"user.list": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="deactivate_user",
@@ -387,6 +396,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["lifecycle", "disable", "offboard"],
+        preconditions={"user.id": "KNOWN"},
+        effects={"user.status": "DEACTIVATED"},
     ))
     kg.add_node(ToolNode(
         action="suspend_user",
@@ -397,6 +408,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["lifecycle", "temporary", "lock"],
+        preconditions={"user.id": "KNOWN"},
+        effects={"user.status": "SUSPENDED"},
     ))
     kg.add_node(ToolNode(
         action="activate_user",
@@ -407,6 +420,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["send_email"],
         outputs=["status", "activation_token"],
         tags=["lifecycle", "enable", "onboard"],
+        preconditions={"user.id": "KNOWN"},
+        effects={"user.status": "ACTIVE"},
     ))
     kg.add_node(ToolNode(
         action="clear_user_sessions",
@@ -417,6 +432,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["session", "security", "revoke"],
+        preconditions={"user.id": "KNOWN"},
+        effects={"user.sessions": "REVOKED"},
     ))
 
     # ── Groups ──
@@ -428,6 +445,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["user_id"],
         outputs=["items"],
         tags=["membership", "enumerate"],
+        preconditions={"user.id": "KNOWN"},
+        effects={"user.groups": "ENUMERATED"},
     ))
     kg.add_node(ToolNode(
         action="remove_user_from_group",
@@ -439,6 +458,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         is_destructive=True,
         is_iterable=True,
         tags=["membership", "revoke", "access"],
+        preconditions={"user.id": "KNOWN", "user.groups": "ENUMERATED"},
+        effects={"user.group_memberships": "REVOKED"},
     ))
     kg.add_node(ToolNode(
         action="add_user_to_group",
@@ -448,6 +469,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["group_id", "user_id"],
         outputs=["status"],
         tags=["membership", "grant", "access"],
+        preconditions={"user.id": "KNOWN", "group.id": "KNOWN"},
+        effects={"user.group_membership": "GRANTED"},
     ))
     kg.add_node(ToolNode(
         action="get_group",
@@ -458,6 +481,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["group_id", "name"],
         outputs=["id", "profile"],
         tags=["lookup", "resolve"],
+        preconditions={"group.identifier": "PROVIDED"},
+        effects={"group.id": "KNOWN", "group.profile": "KNOWN"},
     ))
 
     # ── Applications ──
@@ -469,6 +494,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["user_id"],
         outputs=["items"],
         tags=["assignment", "enumerate", "access"],
+        preconditions={"user.id": "KNOWN"},
+        effects={"user.apps": "AUDITED"},
     ))
     kg.add_node(ToolNode(
         action="list_applications",
@@ -479,6 +506,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["q", "after", "limit", "filter", "expand"],
         outputs=["items"],
         tags=["search", "bulk", "filter"],
+        preconditions={},
+        effects={"application.list": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="get_application",
@@ -489,6 +518,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["expand"],
         outputs=["id", "label", "status", "signOnMode", "settings"],
         tags=["lookup", "resolve"],
+        preconditions={"application.identifier": "PROVIDED"},
+        effects={"application.id": "KNOWN", "application.status": "KNOWN", "application.profile": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="create_application",
@@ -499,6 +530,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["activate"],
         outputs=["id", "label", "status"],
         tags=["create", "onboard"],
+        preconditions={"application.config": "PROVIDED"},
+        effects={"application.id": "KNOWN", "application.status": "CREATED"},
     ))
     kg.add_node(ToolNode(
         action="update_application",
@@ -508,6 +541,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["app_id", "app_config"],
         outputs=["id", "label", "status"],
         tags=["update", "modify"],
+        preconditions={"application.id": "KNOWN", "application.config": "PROVIDED"},
+        effects={"application.profile": "UPDATED"},
     ))
     kg.add_node(ToolNode(
         action="delete_application",
@@ -518,6 +553,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove"],
+        preconditions={"application.id": "KNOWN"},
+        effects={"application.status": "DELETED"},
     ))
     kg.add_node(ToolNode(
         action="activate_application",
@@ -527,6 +564,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["app_id"],
         outputs=["status"],
         tags=["lifecycle", "enable"],
+        preconditions={"application.id": "KNOWN"},
+        effects={"application.status": "ACTIVE"},
     ))
     kg.add_node(ToolNode(
         action="deactivate_application",
@@ -537,6 +576,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["lifecycle", "disable"],
+        preconditions={"application.id": "KNOWN"},
+        effects={"application.status": "DEACTIVATED"},
     ))
 
     # ── Users (additional) ──
@@ -548,6 +589,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["profile"],
         outputs=["id", "profile", "status"],
         tags=["create", "onboard", "identity"],
+        preconditions={"user.profile_data": "PROVIDED"},
+        effects={"user.id": "KNOWN", "user.status": "CREATED", "user.profile": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="update_user",
@@ -557,6 +600,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["user_id", "profile"],
         outputs=["id", "profile", "status"],
         tags=["update", "modify", "identity"],
+        preconditions={"user.id": "KNOWN", "user.profile_data": "PROVIDED"},
+        effects={"user.profile": "UPDATED"},
     ))
     kg.add_node(ToolNode(
         action="delete_deactivated_user",
@@ -567,6 +612,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove", "offboard"],
+        preconditions={"user.id": "KNOWN", "user.status": "DEACTIVATED"},
+        effects={"user.status": "DELETED"},
     ))
     kg.add_node(ToolNode(
         action="get_user_profile_attributes",
@@ -576,6 +623,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=[],
         outputs=["attributes"],
         tags=["schema", "profile", "introspect"],
+        preconditions={},
+        effects={"user.schema": "KNOWN"},
     ))
 
     # ── Groups (additional) ──
@@ -588,6 +637,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["search", "filter", "q", "limit"],
         outputs=["items"],
         tags=["search", "bulk", "filter"],
+        preconditions={},
+        effects={"group.list": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="create_group",
@@ -597,6 +648,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["profile"],
         outputs=["id", "profile"],
         tags=["create", "onboard"],
+        preconditions={"group.profile_data": "PROVIDED"},
+        effects={"group.id": "KNOWN", "group.status": "CREATED"},
     ))
     kg.add_node(ToolNode(
         action="delete_group",
@@ -607,6 +660,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove"],
+        preconditions={"group.id": "KNOWN"},
+        effects={"group.status": "DELETED"},
     ))
     kg.add_node(ToolNode(
         action="update_group",
@@ -616,6 +671,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["group_id", "profile"],
         outputs=["id", "profile"],
         tags=["update", "modify"],
+        preconditions={"group.id": "KNOWN", "group.profile_data": "PROVIDED"},
+        effects={"group.profile": "UPDATED"},
     ))
     kg.add_node(ToolNode(
         action="list_group_users",
@@ -626,6 +683,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["limit", "after"],
         outputs=["items"],
         tags=["membership", "enumerate"],
+        preconditions={"group.id": "KNOWN"},
+        effects={"group.users": "ENUMERATED"},
     ))
     kg.add_node(ToolNode(
         action="list_group_apps",
@@ -635,6 +694,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["group_id"],
         outputs=["items"],
         tags=["assignment", "enumerate", "access"],
+        preconditions={"group.id": "KNOWN"},
+        effects={"group.apps": "ENUMERATED"},
     ))
 
     # ── Policies ──
@@ -647,6 +708,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["status", "q", "limit", "after"],
         outputs=["items"],
         tags=["search", "bulk", "filter"],
+        preconditions={"policy.type": "KNOWN"},
+        effects={"policy.list": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="get_policy",
@@ -656,6 +719,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_id"],
         outputs=["id", "type", "name", "status", "conditions", "settings"],
         tags=["lookup", "resolve"],
+        preconditions={"policy.identifier": "PROVIDED"},
+        effects={"policy.id": "KNOWN", "policy.status": "KNOWN", "policy.profile": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="create_policy",
@@ -665,6 +730,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_data"],
         outputs=["id", "type", "name", "status"],
         tags=["create"],
+        preconditions={"policy.data": "PROVIDED"},
+        effects={"policy.id": "KNOWN", "policy.status": "CREATED"},
     ))
     kg.add_node(ToolNode(
         action="update_policy",
@@ -674,6 +741,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_id", "policy_data"],
         outputs=["id", "type", "name", "status"],
         tags=["update", "modify"],
+        preconditions={"policy.id": "KNOWN", "policy.data": "PROVIDED"},
+        effects={"policy.profile": "UPDATED"},
     ))
     kg.add_node(ToolNode(
         action="delete_policy",
@@ -684,6 +753,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove"],
+        preconditions={"policy.id": "KNOWN"},
+        effects={"policy.status": "DELETED"},
     ))
     kg.add_node(ToolNode(
         action="activate_policy",
@@ -693,6 +764,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_id"],
         outputs=["status"],
         tags=["lifecycle", "enable"],
+        preconditions={"policy.id": "KNOWN"},
+        effects={"policy.status": "ACTIVE"},
     ))
     kg.add_node(ToolNode(
         action="deactivate_policy",
@@ -703,6 +776,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["lifecycle", "disable"],
+        preconditions={"policy.id": "KNOWN"},
+        effects={"policy.status": "DEACTIVATED"},
     ))
 
     # ── Policy Rules ──
@@ -714,6 +789,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_id"],
         outputs=["items"],
         tags=["search", "enumerate"],
+        preconditions={"policy.id": "KNOWN"},
+        effects={"policy.rules": "ENUMERATED"},
     ))
     kg.add_node(ToolNode(
         action="get_policy_rule",
@@ -723,6 +800,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_id", "rule_id"],
         outputs=["id", "name", "status", "conditions", "actions"],
         tags=["lookup", "resolve"],
+        preconditions={"policy.id": "KNOWN", "policy_rule.identifier": "PROVIDED"},
+        effects={"policy_rule.id": "KNOWN", "policy_rule.status": "KNOWN", "policy_rule.profile": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="create_policy_rule",
@@ -732,6 +811,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_id", "rule_data"],
         outputs=["id", "name", "status"],
         tags=["create"],
+        preconditions={"policy.id": "KNOWN", "policy_rule.data": "PROVIDED"},
+        effects={"policy_rule.id": "KNOWN", "policy_rule.status": "CREATED"},
     ))
     kg.add_node(ToolNode(
         action="update_policy_rule",
@@ -741,6 +822,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_id", "rule_id", "rule_data"],
         outputs=["id", "name", "status"],
         tags=["update", "modify"],
+        preconditions={"policy.id": "KNOWN", "policy_rule.id": "KNOWN", "policy_rule.data": "PROVIDED"},
+        effects={"policy_rule.profile": "UPDATED"},
     ))
     kg.add_node(ToolNode(
         action="delete_policy_rule",
@@ -751,6 +834,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove"],
+        preconditions={"policy.id": "KNOWN", "policy_rule.id": "KNOWN"},
+        effects={"policy_rule.status": "DELETED"},
     ))
     kg.add_node(ToolNode(
         action="activate_policy_rule",
@@ -760,6 +845,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_id", "rule_id"],
         outputs=["status"],
         tags=["lifecycle", "enable"],
+        preconditions={"policy.id": "KNOWN", "policy_rule.id": "KNOWN"},
+        effects={"policy_rule.status": "ACTIVE"},
     ))
     kg.add_node(ToolNode(
         action="deactivate_policy_rule",
@@ -770,6 +857,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["lifecycle", "disable"],
+        preconditions={"policy.id": "KNOWN", "policy_rule.id": "KNOWN"},
+        effects={"policy_rule.status": "DEACTIVATED"},
     ))
 
     # ── Device Assurance ──
@@ -781,6 +870,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=[],
         outputs=["items"],
         tags=["search", "bulk", "audit"],
+        preconditions={},
+        effects={"device_assurance.list": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="get_device_assurance_policy",
@@ -790,6 +881,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["device_assurance_id"],
         outputs=["id", "name", "platform", "osVersion", "status"],
         tags=["lookup", "resolve"],
+        preconditions={"device_assurance.identifier": "PROVIDED"},
+        effects={"device_assurance.id": "KNOWN", "device_assurance.status": "KNOWN", "device_assurance.profile": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="create_device_assurance_policy",
@@ -799,6 +892,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["policy_data"],
         outputs=["id", "name", "platform", "status"],
         tags=["create"],
+        preconditions={"device_assurance.data": "PROVIDED"},
+        effects={"device_assurance.id": "KNOWN", "device_assurance.status": "CREATED"},
     ))
     kg.add_node(ToolNode(
         action="replace_device_assurance_policy",
@@ -808,6 +903,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["device_assurance_id", "policy_data"],
         outputs=["id", "name", "platform", "status", "changes"],
         tags=["update", "modify", "replace"],
+        preconditions={"device_assurance.id": "KNOWN", "device_assurance.data": "PROVIDED"},
+        effects={"device_assurance.profile": "UPDATED"},
     ))
     kg.add_node(ToolNode(
         action="delete_device_assurance_policy",
@@ -818,6 +915,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove"],
+        preconditions={"device_assurance.id": "KNOWN"},
+        effects={"device_assurance.status": "DELETED"},
     ))
 
     # ── System Logs ──
@@ -830,6 +929,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["since", "until", "filter", "q", "limit", "after"],
         outputs=["items"],
         tags=["audit", "search", "events", "monitoring"],
+        preconditions={},
+        effects={"log.events": "RETRIEVED"},
     ))
 
     # ── Brands ──
@@ -841,6 +942,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=[],
         outputs=["items"],
         tags=["search", "bulk", "customization"],
+        preconditions={},
+        effects={"brand.list": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="get_brand",
@@ -850,6 +953,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["id", "name", "custom_privacy_policy_url"],
         tags=["lookup", "resolve", "customization"],
+        preconditions={"brand.identifier": "PROVIDED"},
+        effects={"brand.id": "KNOWN", "brand.profile": "KNOWN"},
     ))
     kg.add_node(ToolNode(
         action="create_brand",
@@ -859,6 +964,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_data"],
         outputs=["id", "name"],
         tags=["create", "customization"],
+        preconditions={"brand.data": "PROVIDED"},
+        effects={"brand.id": "KNOWN", "brand.status": "CREATED"},
     ))
     kg.add_node(ToolNode(
         action="replace_brand",
@@ -868,6 +975,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "brand_data"],
         outputs=["id", "name"],
         tags=["update", "modify", "customization"],
+        preconditions={"brand.id": "KNOWN", "brand.data": "PROVIDED"},
+        effects={"brand.profile": "UPDATED"},
     ))
     kg.add_node(ToolNode(
         action="delete_brand",
@@ -878,6 +987,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove", "customization"],
+        preconditions={"brand.id": "KNOWN"},
+        effects={"brand.status": "DELETED"},
     ))
     kg.add_node(ToolNode(
         action="list_brand_domains",
@@ -887,6 +998,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["items"],
         tags=["enumerate", "customization"],
+        preconditions={"brand.id": "KNOWN"},
+        effects={"brand.domains": "ENUMERATED"},
     ))
 
     # ── Custom Domains ──
@@ -898,6 +1011,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=[],
         outputs=["items"],
         tags=["search", "bulk", "customization"],
+        preconditions={},
+        effects={'custom_domain.list': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="create_custom_domain",
@@ -907,6 +1022,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["domain_data"],
         outputs=["id", "domain"],
         tags=["create", "customization"],
+        preconditions={'custom_domain.data': 'PROVIDED'},
+        effects={'custom_domain.id': 'KNOWN', 'custom_domain.status': 'CREATED'},
     ))
     kg.add_node(ToolNode(
         action="get_custom_domain",
@@ -916,6 +1033,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["domain_id"],
         outputs=["id", "domain", "status"],
         tags=["lookup", "resolve", "customization"],
+        preconditions={'custom_domain.identifier': 'PROVIDED'},
+        effects={'custom_domain.id': 'KNOWN', 'custom_domain.status': 'KNOWN', 'custom_domain.profile': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_custom_domain",
@@ -925,6 +1044,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["domain_id", "domain_data"],
         outputs=["id", "domain"],
         tags=["update", "modify", "customization"],
+        preconditions={'custom_domain.id': 'KNOWN', 'custom_domain.data': 'PROVIDED'},
+        effects={'custom_domain.profile': 'UPDATED'},
     ))
     kg.add_node(ToolNode(
         action="delete_custom_domain",
@@ -935,6 +1056,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove", "customization"],
+        preconditions={'custom_domain.id': 'KNOWN'},
+        effects={'custom_domain.status': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="upsert_custom_domain_certificate",
@@ -944,6 +1067,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["domain_id", "certificate_data"],
         outputs=["status"],
         tags=["certificate", "ssl", "customization"],
+        preconditions={'custom_domain.id': 'KNOWN', 'custom_domain.certificate_data': 'PROVIDED'},
+        effects={'custom_domain.certificate': 'CONFIGURED'},
     ))
     kg.add_node(ToolNode(
         action="verify_custom_domain",
@@ -953,6 +1078,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["domain_id"],
         outputs=["status"],
         tags=["verify", "dns", "customization"],
+        preconditions={'custom_domain.id': 'KNOWN'},
+        effects={'custom_domain.status': 'VERIFIED'},
     ))
 
     # ── Email Domains ──
@@ -964,6 +1091,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=[],
         outputs=["items"],
         tags=["search", "bulk", "customization"],
+        preconditions={},
+        effects={'email_domain.list': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="create_email_domain",
@@ -973,6 +1102,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["email_domain_data"],
         outputs=["id", "domain"],
         tags=["create", "customization"],
+        preconditions={'email_domain.data': 'PROVIDED'},
+        effects={'email_domain.id': 'KNOWN', 'email_domain.status': 'CREATED'},
     ))
     kg.add_node(ToolNode(
         action="get_email_domain",
@@ -982,6 +1113,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["email_domain_id"],
         outputs=["id", "domain", "status"],
         tags=["lookup", "resolve", "customization"],
+        preconditions={'email_domain.identifier': 'PROVIDED'},
+        effects={'email_domain.id': 'KNOWN', 'email_domain.status': 'KNOWN', 'email_domain.profile': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_email_domain",
@@ -991,6 +1124,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["email_domain_id", "email_domain_data"],
         outputs=["id", "domain"],
         tags=["update", "modify", "customization"],
+        preconditions={'email_domain.id': 'KNOWN', 'email_domain.data': 'PROVIDED'},
+        effects={'email_domain.profile': 'UPDATED'},
     ))
     kg.add_node(ToolNode(
         action="delete_email_domain",
@@ -1001,6 +1136,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove", "customization"],
+        preconditions={'email_domain.id': 'KNOWN'},
+        effects={'email_domain.status': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="verify_email_domain",
@@ -1010,6 +1147,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["email_domain_id"],
         outputs=["status"],
         tags=["verify", "dns", "customization"],
+        preconditions={'email_domain.id': 'KNOWN'},
+        effects={'email_domain.status': 'VERIFIED'},
     ))
 
     # ── Themes ──
@@ -1021,6 +1160,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["items"],
         tags=["search", "enumerate", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'theme.list': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="get_brand_theme",
@@ -1030,6 +1171,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "theme_id"],
         outputs=["id", "primaryColorHex", "secondaryColorHex"],
         tags=["lookup", "resolve", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'theme.identifier': 'PROVIDED'},
+        effects={'theme.id': 'KNOWN', 'theme.profile': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_brand_theme",
@@ -1039,6 +1182,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "theme_id"],
         outputs=["id"],
         tags=["update", "modify", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'theme.id': 'KNOWN'},
+        effects={'theme.profile': 'UPDATED'},
     ))
     kg.add_node(ToolNode(
         action="upload_brand_theme_logo",
@@ -1048,6 +1193,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "theme_id", "file_path"],
         outputs=["status"],
         tags=["upload", "logo", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'theme.id': 'KNOWN', 'theme.file': 'PROVIDED'},
+        effects={'theme.logo': 'UPLOADED'},
     ))
     kg.add_node(ToolNode(
         action="delete_brand_theme_logo",
@@ -1058,6 +1205,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "logo", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'theme.id': 'KNOWN'},
+        effects={'theme.logo': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="upload_brand_theme_favicon",
@@ -1067,6 +1216,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "theme_id", "file_path"],
         outputs=["status"],
         tags=["upload", "favicon", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'theme.id': 'KNOWN', 'theme.file': 'PROVIDED'},
+        effects={'theme.favicon': 'UPLOADED'},
     ))
     kg.add_node(ToolNode(
         action="delete_brand_theme_favicon",
@@ -1077,6 +1228,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "favicon", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'theme.id': 'KNOWN'},
+        effects={'theme.favicon': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="upload_brand_theme_background_image",
@@ -1086,6 +1239,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "theme_id", "file_path"],
         outputs=["status"],
         tags=["upload", "background", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'theme.id': 'KNOWN', 'theme.file': 'PROVIDED'},
+        effects={'theme.background': 'UPLOADED'},
     ))
     kg.add_node(ToolNode(
         action="delete_brand_theme_background_image",
@@ -1096,6 +1251,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "background", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'theme.id': 'KNOWN'},
+        effects={'theme.background': 'DELETED'},
     ))
 
     # ── Custom Pages ──
@@ -1107,6 +1264,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["page_content"],
         tags=["lookup", "error_page", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.error_page': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_customized_error_page",
@@ -1116,6 +1275,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "page_content"],
         outputs=["page_content"],
         tags=["update", "error_page", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'custom_page.content': 'PROVIDED'},
+        effects={'custom_page.error_page': 'UPDATED'},
     ))
     kg.add_node(ToolNode(
         action="delete_customized_error_page",
@@ -1126,6 +1287,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "error_page", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.error_page': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="get_default_error_page",
@@ -1135,6 +1298,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["page_content"],
         tags=["lookup", "error_page", "default", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.error_page_default': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="get_preview_error_page",
@@ -1144,6 +1309,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["page_content"],
         tags=["lookup", "error_page", "preview", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.error_page_preview': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_preview_error_page",
@@ -1153,6 +1320,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "page_content"],
         outputs=["page_content"],
         tags=["update", "error_page", "preview", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'custom_page.content': 'PROVIDED'},
+        effects={'custom_page.error_page_preview': 'UPDATED'},
     ))
     kg.add_node(ToolNode(
         action="delete_preview_error_page",
@@ -1163,6 +1332,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "error_page", "preview", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.error_page_preview': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="get_error_page_resources",
@@ -1172,6 +1343,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["resources"],
         tags=["lookup", "error_page", "resources", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.error_page_resources': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="get_customized_sign_in_page",
@@ -1181,6 +1354,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["page_content"],
         tags=["lookup", "sign_in_page", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.sign_in_page': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_customized_sign_in_page",
@@ -1190,6 +1365,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "page_content"],
         outputs=["page_content"],
         tags=["update", "sign_in_page", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'custom_page.content': 'PROVIDED'},
+        effects={'custom_page.sign_in_page': 'UPDATED'},
     ))
     kg.add_node(ToolNode(
         action="delete_customized_sign_in_page",
@@ -1200,6 +1377,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "sign_in_page", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.sign_in_page': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="get_default_sign_in_page",
@@ -1209,6 +1388,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["page_content"],
         tags=["lookup", "sign_in_page", "default", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.sign_in_page_default': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="get_preview_sign_in_page",
@@ -1218,6 +1399,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["page_content"],
         tags=["lookup", "sign_in_page", "preview", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.sign_in_page_preview': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_preview_sign_in_page",
@@ -1227,6 +1410,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "page_content"],
         outputs=["page_content"],
         tags=["update", "sign_in_page", "preview", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'custom_page.content': 'PROVIDED'},
+        effects={'custom_page.sign_in_page_preview': 'UPDATED'},
     ))
     kg.add_node(ToolNode(
         action="delete_preview_sign_in_page",
@@ -1237,6 +1422,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "sign_in_page", "preview", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.sign_in_page_preview': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="get_sign_in_page_resources",
@@ -1246,6 +1433,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["resources"],
         tags=["lookup", "sign_in_page", "resources", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.sign_in_page_resources': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="list_sign_in_widget_versions",
@@ -1255,6 +1444,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=[],
         outputs=["items"],
         tags=["search", "sign_in_page", "widget", "customization"],
+        preconditions={},
+        effects={'custom_page.widget_versions': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="get_sign_out_page_settings",
@@ -1264,6 +1455,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["settings"],
         tags=["lookup", "sign_out_page", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'custom_page.sign_out_settings': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_sign_out_page_settings",
@@ -1273,6 +1466,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "settings"],
         outputs=["settings"],
         tags=["update", "sign_out_page", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'custom_page.settings': 'PROVIDED'},
+        effects={'custom_page.sign_out_settings': 'UPDATED'},
     ))
 
     # ── Email Templates ──
@@ -1284,6 +1479,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id"],
         outputs=["items"],
         tags=["search", "enumerate", "customization"],
+        preconditions={'brand.id': 'KNOWN'},
+        effects={'email_template.list': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="get_email_template",
@@ -1293,6 +1490,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name"],
         outputs=["template"],
         tags=["lookup", "resolve", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.identifier': 'PROVIDED'},
+        effects={'email_template.id': 'KNOWN', 'email_template.profile': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="list_email_customizations",
@@ -1302,6 +1501,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name"],
         outputs=["items"],
         tags=["search", "enumerate", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN'},
+        effects={'email_template.customizations': 'ENUMERATED'},
     ))
     kg.add_node(ToolNode(
         action="create_email_customization",
@@ -1311,6 +1512,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name", "customization_data"],
         outputs=["id"],
         tags=["create", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN', 'email_template.customization_data': 'PROVIDED'},
+        effects={'email_template.customization_id': 'KNOWN', 'email_template.customization': 'CREATED'},
     ))
     kg.add_node(ToolNode(
         action="get_email_customization",
@@ -1320,6 +1523,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name", "customization_id"],
         outputs=["id", "language", "subject", "body"],
         tags=["lookup", "resolve", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN', 'email_template.customization_id': 'KNOWN'},
+        effects={'email_template.customization_profile': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_email_customization",
@@ -1329,6 +1534,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name", "customization_id", "customization_data"],
         outputs=["id"],
         tags=["update", "modify", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN', 'email_template.customization_id': 'KNOWN', 'email_template.customization_data': 'PROVIDED'},
+        effects={'email_template.customization_profile': 'UPDATED'},
     ))
     kg.add_node(ToolNode(
         action="delete_email_customization",
@@ -1339,6 +1546,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN', 'email_template.customization_id': 'KNOWN'},
+        effects={'email_template.customization': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="delete_all_email_customizations",
@@ -1349,6 +1558,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         outputs=["status"],
         is_destructive=True,
         tags=["delete", "remove", "bulk", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN'},
+        effects={'email_template.customizations': 'DELETED'},
     ))
     kg.add_node(ToolNode(
         action="get_email_customization_preview",
@@ -1358,6 +1569,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name", "customization_id"],
         outputs=["preview"],
         tags=["preview", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN', 'email_template.customization_id': 'KNOWN'},
+        effects={'email_template.customization_preview': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="get_email_default_content",
@@ -1367,6 +1580,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name"],
         outputs=["content"],
         tags=["lookup", "default", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN'},
+        effects={'email_template.default_content': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="get_email_default_content_preview",
@@ -1376,6 +1591,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name"],
         outputs=["preview"],
         tags=["preview", "default", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN'},
+        effects={'email_template.default_content_preview': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="get_email_settings",
@@ -1385,6 +1602,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name"],
         outputs=["settings"],
         tags=["lookup", "settings", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN'},
+        effects={'email_template.settings': 'KNOWN'},
     ))
     kg.add_node(ToolNode(
         action="replace_email_settings",
@@ -1394,6 +1613,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name", "settings"],
         outputs=["settings"],
         tags=["update", "settings", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN', 'email_template.settings_data': 'PROVIDED'},
+        effects={'email_template.settings': 'UPDATED'},
     ))
     kg.add_node(ToolNode(
         action="send_test_email",
@@ -1403,6 +1624,8 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         required_params=["brand_id", "template_name", "customization_id"],
         outputs=["status"],
         tags=["test", "send", "customization"],
+        preconditions={'brand.id': 'KNOWN', 'email_template.id': 'KNOWN', 'email_template.customization_id': 'KNOWN'},
+        effects={'email_template.test_email': 'SENT'},
     ))
 
     # ===================================================================

@@ -6,13 +6,18 @@
 # See the License for the specific language governing permissions and limitations under the License.
 
 """
-Orchestrator MCP Tools — three server-side tools that let the LLM
-execute multi-step Okta workflows without individual tool round-trips.
+Orchestrator MCP Tools — legacy predefined-workflow orchestrator.
 
-Tools:
-    orchestrator_query    — discover/build a workflow plan
-    orchestrator_execute  — execute an approved plan server-side
-    orchestrator_context  — retrieve the current session state
+NOTE: This module provides predefined workflow matching (offboard/suspend/onboard).
+For dynamic, goal-driven workflow planning, prefer the CSP solver tools:
+
+    orchestrator_plan_for_goal  — CSP solver: goal in, executable plan out
+    orchestrator_execute        — execute an approved plan server-side
+    orchestrator_context        — retrieve session state + graph stats
+
+The CSP solver (in orchestrator_kg.py) can automatically determine the
+correct sequence of Okta API calls for any registered goal, without
+requiring manual workflow definitions.
 """
 
 from typing import Optional
@@ -42,11 +47,11 @@ async def orchestrator_query(
     target_identifier: str,
     intent: Optional[str] = None,
 ) -> dict:
-    """Build a multi-step Okta workflow plan that the server will execute internally.
+    """Build a multi-step Okta workflow plan from predefined workflows.
 
-    Instead of calling individual tools one-by-one, describe WHAT you want to do
-    and the server builds an execution plan that chains multiple Okta API calls.
-    Review the plan, then call orchestrator_execute to run it server-side.
+    NOTE: For dynamic goal-driven planning, prefer orchestrator_plan_for_goal()
+    which uses the CSP constraint solver to automatically determine the correct
+    action sequence. This tool only supports a fixed set of predefined workflows.
 
     Parameters:
         action (str, required): The operation to perform. Currently supported:
@@ -66,9 +71,11 @@ async def orchestrator_query(
         - hint: Guidance on next steps
 
     Example:
+        # Prefer the CSP solver instead:
+        orchestrator_plan_for_goal(goal_name="offboard_user", target_identifier="john@acme.com")
+
+        # Legacy predefined workflow:
         orchestrator_query(action="offboard", target_type="user", target_identifier="john@acme.com")
-        orchestrator_query(action="suspend",  target_type="user", target_identifier="jane@acme.com")
-        orchestrator_query(action="onboard",  target_type="user", target_identifier="new.hire@acme.com")
     """
     logger.info(f"orchestrator_query: action='{action}', target_type='{target_type}', "
                 f"target_identifier='{target_identifier}', intent='{intent}'")
@@ -80,9 +87,10 @@ async def orchestrator_query(
             "available_workflows": workflows,
             "total_workflows": len(workflows),
             "hint": (
-                "Call orchestrator_query with action and target_type from the list above. "
-                "Example: orchestrator_query(action='offboard', target_type='user', "
-                "target_identifier='john@acme.com')"
+                "Prefer orchestrator_plan_for_goal() for dynamic goal-driven planning. "
+                "Example: orchestrator_plan_for_goal(goal_name='offboard_user', "
+                "target_identifier='john@acme.com'). "
+                "Or use orchestrator_query with action and target_type from the list above."
             ),
         }
 
@@ -98,8 +106,10 @@ async def orchestrator_query(
             "error": f"No workflow found for action='{action}', target_type='{target_type}'",
             "available_workflows": get_workflow_info(),
             "hint": (
-                "Use action='list' to see supported workflows, or try a different "
-                "action/target_type combination."
+                "Try orchestrator_plan_for_goal() for automatic workflow planning. "
+                "Example: orchestrator_plan_for_goal(goal_name='offboard_user', "
+                "target_identifier='john@acme.com'). "
+                "Or use action='list' to see predefined workflows."
             ),
         }
 
@@ -143,7 +153,7 @@ async def orchestrator_execute(
     resolved automatically.  Returns a consolidated result with all outcomes.
 
     Parameters:
-        plan_id (str, required): The plan ID returned by orchestrator_query.
+        plan_id (str, required): The plan ID returned by orchestrator_plan_for_goal or orchestrator_query.
 
     Returns:
         Dict containing:
@@ -158,7 +168,7 @@ async def orchestrator_execute(
 
     if not plan:
         return {
-            "error": f"Plan '{plan_id}' not found. Call orchestrator_query first to create a plan.",
+            "error": f"Plan '{plan_id}' not found. Call orchestrator_plan_for_goal or orchestrator_query first to create a plan.",
             "active_plans": [
                 {"plan_id": p.plan_id, "workflow": p.workflow_name, "status": p.status.value}
                 for p in session.plans.values()
@@ -193,7 +203,7 @@ async def orchestrator_execute(
         "hint": (
             f"Workflow '{plan.workflow_name}' {plan.status.value}. "
             f"Call orchestrator_context() to see the full session state, "
-            f"or orchestrator_query() to start another workflow."
+            f"or orchestrator_plan_for_goal() to plan a new workflow with the CSP solver."
         ),
     }
 
@@ -225,7 +235,7 @@ async def orchestrator_context(ctx: Context) -> dict:
         "session": session.to_dict(),
         "active_plans": active_plans,
         "hint": (
-            "Use orchestrator_query() to build a new workflow, "
+            "Use orchestrator_plan_for_goal() to plan a new workflow with the CSP solver, "
             "or orchestrator_execute(plan_id='...') to run a pending plan."
         ),
     }

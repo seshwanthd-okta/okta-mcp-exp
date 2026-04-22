@@ -10,11 +10,30 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any, List, Optional
 
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
 from okta_mcp_server.utils.auth.auth_manager import OktaAuthManager
+
+
+def _patch_okta_sdk_models() -> None:
+    """Patch Okta SDK pydantic models that have incorrect field types.
+
+    LogSecurityContext.userBehaviors is typed as List[StrictStr] in the generated
+    SDK, but the Okta API actually returns a list of behavior objects.  Relax the
+    annotation to List[Any] so pydantic validation does not reject real responses.
+    """
+    try:
+        from okta.models.log_security_context import LogSecurityContext
+
+        # Pydantic v2: update the class-level annotation then rebuild the model
+        LogSecurityContext.__annotations__["user_behaviors"] = Optional[List[Any]]
+        LogSecurityContext.model_rebuild(force=True)
+        logger.debug("Patched LogSecurityContext.userBehaviors → List[Any]")
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"Could not patch LogSecurityContext: {exc}")
 
 LOG_FILE = os.environ.get("OKTA_LOG_FILE")
 
@@ -64,7 +83,9 @@ def main():
     )
 
     logger.info("Starting Okta MCP Server — Dynamic KG Orchestrator mode")
-    logger.info("LLM starts with 4 tools: query_graph, build_plan, execute, context")
+
+    # Patch Okta SDK models with incorrect field types before any tools load
+    _patch_okta_sdk_models()
 
     # Register KG-based orchestrator tools at startup
     from okta_mcp_server.tools.orchestrator import orchestrator_kg  # noqa: F401
