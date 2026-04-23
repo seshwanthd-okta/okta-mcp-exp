@@ -145,6 +145,7 @@ async def orchestrator_query(
 async def orchestrator_execute(
     ctx: Context,
     plan_id: str,
+    params: Optional[str] = None,
 ) -> dict:
     """Execute an approved workflow plan server-side.
 
@@ -154,6 +155,10 @@ async def orchestrator_execute(
 
     Parameters:
         plan_id (str, required): The plan ID returned by orchestrator_plan_for_goal or orchestrator_query.
+        params (str, optional): Additional params as "key=value,key=value" to inject
+            into plan steps at execution time. Each handler picks up the params it
+            needs (e.g. name=Everyone for get_group). Existing step params are not
+            overwritten.
 
     Returns:
         Dict containing:
@@ -161,7 +166,7 @@ async def orchestrator_execute(
         - context: Resolved entities and key data from the execution
         - hint: What to do next
     """
-    logger.info(f"orchestrator_execute: plan_id='{plan_id}'")
+    logger.info(f"orchestrator_execute: plan_id='{plan_id}', params='{params}'")
 
     session = get_session()
     plan = session.plans.get(plan_id)
@@ -180,6 +185,19 @@ async def orchestrator_execute(
             "error": f"Plan '{plan_id}' is in state '{plan.status.value}' and cannot be executed.",
             "summary": plan.to_summary(),
         }
+
+    # Merge user-provided params into each step (handlers ignore unknown params)
+    if params:
+        extra: dict = {}
+        for pair in params.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                extra[k.strip()] = v.strip()
+        if extra:
+            for step in plan.steps:
+                for k, v in extra.items():
+                    if k not in step.params:
+                        step.params[k] = v
 
     # Get the Okta auth manager from context
     manager = ctx.request_context.lifespan_context.okta_auth_manager

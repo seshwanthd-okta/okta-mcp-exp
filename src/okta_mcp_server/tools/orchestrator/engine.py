@@ -16,6 +16,7 @@ intermediate steps — it gets one final context object.
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -723,7 +724,7 @@ async def _action_add_user_to_group(params: dict, client) -> str:
     if not group_id or not user_id:
         raise ValueError("add_user_to_group requires 'group_id' and 'user_id'")
 
-    result = await client.add_user_to_group(group_id, user_id)
+    result = await client.assign_user_to_group(group_id, user_id)
     err = result[-1] if isinstance(result, tuple) else None
     if err:
         raise RuntimeError(f"Okta API error adding user {user_id} to group {group_id}: {err}")
@@ -748,7 +749,7 @@ async def _action_get_group(params: dict, client) -> Any:
     if not name:
         raise ValueError("get_group requires 'group_id' or 'name'")
 
-    groups, _, err = await client.list_groups(query_params={"q": name})
+    groups, _, err = await client.list_groups(q=name)
     if err:
         raise RuntimeError(f"Okta API error searching for group '{name}': {err}")
     if not groups:
@@ -772,6 +773,16 @@ async def _action_create_user(params: dict, client) -> Any:
         assembled = {k: params[k] for k in profile_fields if k in params}
         if assembled:
             profile = assembled
+        elif isinstance(profile, str) and "@" in profile:
+            # Derive a minimal profile from an email-like identifier
+            local_part = profile.split("@")[0]
+            parts = local_part.split(".")
+            profile = {
+                "login": profile,
+                "email": profile,
+                "firstName": parts[0].capitalize() if parts else local_part.capitalize(),
+                "lastName": parts[1].capitalize() if len(parts) > 1 else "",
+            }
         elif not profile:
             raise ValueError("create_user requires 'profile'")
 
@@ -915,17 +926,37 @@ async def _action_list_group_apps(params: dict, client) -> list:
 
 async def _action_list_applications(params: dict, client) -> list:
     """List applications. Accepts 'q', 'filter', 'limit', 'after', 'expand'."""
-    query = {}
-    for key in ("q", "filter", "after", "expand"):
-        if params.get(key):
-            query[key] = params[key]
-    if params.get("limit"):
-        query["limit"] = int(params["limit"])
-
-    apps, resp, err = await client.list_applications(**query)
+    # Bypass SDK pydantic deserialization — some JWK credential models in the SDK
+    # declare fields as required StrictStr but the API can return None for them,
+    # causing validation errors.  Using raw HTTP avoids this SDK bug.
+    method, url, header_params, body, _post_params = (
+        client._list_applications_serialize(
+            q=params.get("q"),
+            after=params.get("after"),
+            use_optimization=None,
+            always_include_vpn_settings=None,
+            limit=int(params["limit"]) if params.get("limit") else None,
+            filter=params.get("filter"),
+            expand=params.get("expand"),
+            include_non_deleted=None,
+            _request_auth=None,
+            _content_type=None,
+            _headers=None,
+            _host_index=0,
+        )
+    )
+    request, err = await client._request_executor.create_request(
+        method, url, body, header_params, {}, keep_empty_params=False
+    )
+    if err:
+        raise RuntimeError(f"Failed to create list_applications request: {err}")
+    response, response_body, err = await client._request_executor.execute(request)
     if err:
         raise RuntimeError(f"Okta API error listing applications: {err}")
-    return await _auto_paginate(apps, resp)
+    if not response_body:
+        return []
+    apps = json.loads(response_body) if isinstance(response_body, str) else response_body
+    return apps if isinstance(apps, list) else []
 
 
 async def _action_get_application(params: dict, client) -> Any:

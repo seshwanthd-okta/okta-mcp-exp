@@ -46,13 +46,14 @@ class OktaAppContext:
 @asynccontextmanager
 async def okta_authorisation_flow(server: FastMCP) -> AsyncIterator[OktaAppContext]:
     """
-    Manages the application lifecycle. It initializes the OktaManager on startup,
-    performs authorization, and yields the context for use in tools.
+    Manages the application lifecycle. It initializes the OktaManager on startup
+    and yields the context. Authentication is deferred to the first tool call so
+    the MCP server can start serving immediately without blocking on browser auth.
     """
     logger.info("Starting Okta authorization flow")
     manager = OktaAuthManager()
-    await manager.authenticate()
-    logger.info("Okta authentication completed successfully")
+    # Defer authentication — tools call manager.authenticate() lazily via is_valid_token()
+    logger.info("OktaAuthManager ready (authentication deferred to first tool call)")
 
     try:
         yield OktaAppContext(okta_auth_manager=manager)

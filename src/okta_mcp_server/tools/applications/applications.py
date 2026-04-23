@@ -5,6 +5,7 @@
 # Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and limitations under the License.
 
+import json
 from typing import Any, Dict, Optional
 
 import okta.models as okta_models
@@ -86,34 +87,52 @@ async def list_applications(
 
     try:
         client = await get_okta_client(manager)
-        query_params = {}
 
-        if q:
-            query_params["q"] = q
-        if after:
-            query_params["after"] = after
-        if limit:
-            query_params["limit"] = limit
-        if filter:
-            query_params["filter"] = filter
-        if expand:
-            query_params["expand"] = expand
-        if include_non_deleted is not None:
-            query_params["include_non_deleted"] = include_non_deleted
+        # Use the SDK's request serializer but execute without model deserialization.
+        # The SDK's pydantic models for some JWK credential types define fields as required
+        # StrictStr but the API can return None for them, causing validation errors.
+        # Bypassing deserialization and working with raw JSON avoids this SDK bug.
+        method, url, header_params, body, _post_params = (
+            client._list_applications_serialize(
+                q=q,
+                after=after,
+                use_optimization=None,
+                always_include_vpn_settings=None,
+                limit=limit,
+                filter=filter,
+                expand=expand,
+                include_non_deleted=include_non_deleted,
+                _request_auth=None,
+                _content_type=None,
+                _headers=None,
+                _host_index=0,
+            )
+        )
 
-        logger.debug("Calling Okta API to list applications")
-        apps, _, err = await client.list_applications(**query_params)
+        logger.debug("Calling Okta API to list applications (raw)")
+        request, err = await client._request_executor.create_request(
+            method, url, body, header_params, {}, keep_empty_params=False
+        )
+        if err:
+            logger.error(f"Failed to create request: {err}")
+            return [f"Error: {err}"]
 
+        response, response_body, err = await client._request_executor.execute(request)
         if err:
             logger.error(f"Okta API error while listing applications: {err}")
             return [f"Error: {err}"]
 
-        if not apps:
+        if not response_body:
             logger.info("No applications found")
             return []
 
+        apps = json.loads(response_body) if isinstance(response_body, str) else response_body
+        if not isinstance(apps, list):
+            logger.error(f"Unexpected response format: {type(apps)}")
+            return [f"Error: unexpected response format"]
+
         logger.info(f"Successfully retrieved {len(apps)} applications")
-        return [app for app in apps]
+        return apps
     except Exception as e:
         logger.error(f"Exception while listing applications: {type(e).__name__}: {e}")
         return [f"Exception: {e}"]

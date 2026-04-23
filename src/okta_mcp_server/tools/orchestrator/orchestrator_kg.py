@@ -392,6 +392,7 @@ async def orchestrator_plan_for_goal(
     goal_state: Optional[str] = None,
     initial_state: Optional[str] = None,
     target_identifier: Optional[str] = None,
+    extra_params: Optional[str] = None,
 ) -> dict:
     """Plan an Okta workflow using the CSP constraint solver.
 
@@ -422,11 +423,15 @@ async def orchestrator_plan_for_goal(
         "onboard_user"                   Create user → add to group → activate
         "audit_user"                     Profile + apps + groups + system logs
         "rotate_user_credentials"        Clear all sessions (force re-auth)
+        "create_group"                   Create a new group
+        "audit_group"                    Look up group → list members + apps
+        "add_user_to_group"              Resolve user + group → add membership
+        "list_groups"                    List all groups
+        "cleanup_group"                  Look up group → delete
         "setup_brand"                    List brands → get brand → list themes
         "configure_custom_domain"        Create → verify → add certificate
         "configure_email_domain"         Create → verify
         "setup_device_assurance_policy"  Create policy → list policies
-        "cleanup_group"                  Look up group → delete
 
     ALTERNATIVE — Supply an ad-hoc goal_state when none of the above fit.
     DISCOVERY — Call with no arguments to list all registered goals.
@@ -688,6 +693,20 @@ async def orchestrator_plan_for_goal(
                 for param in (first_node.optional_params or []):
                     if param in init_state:
                         step_dicts[0]["params"][param] = init_state[param]
+
+        # Parse extra_params and distribute to every step so each handler
+        # can pick up the fields it needs (e.g. name= for get_group).
+        # Handlers simply ignore params they don't use.
+        if extra_params:
+            extra: dict = {}
+            for pair in extra_params.split(","):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    extra[k.strip()] = v.strip()
+            for step_dict in step_dicts:
+                for k, v in extra.items():
+                    if k not in step_dict["params"]:
+                        step_dict["params"][k] = v
 
         steps = [
             Step(

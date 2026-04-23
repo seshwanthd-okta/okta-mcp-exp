@@ -1665,6 +1665,18 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         description="Group ID from lookup feeds into add_user_to_group",
     ))
 
+    # create_user produces user_id for downstream onboarding steps
+    for target in [
+        "activate_user", "add_user_to_group",
+    ]:
+        kg.add_edge(Edge(
+            source="create_user",
+            target=target,
+            source_output="id",
+            target_param="user_id",
+            description=f"User ID from create_user feeds into {target}",
+        ))
+
     # get_user → user write operations (additional)
     for target in ["update_user", "delete_deactivated_user"]:
         kg.add_edge(Edge(

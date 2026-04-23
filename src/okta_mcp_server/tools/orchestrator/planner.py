@@ -140,7 +140,7 @@ def _register_builtin_goals() -> None:
             "user.status": "ACTIVE",
             "user.group_membership": "GRANTED",
         },
-        initial_hints={"user.profile_data": "PROVIDED", "group.id": "KNOWN"},
+        initial_hints={"user.profile_data": "PROVIDED", "group.identifier": "PROVIDED"},
     ))
 
     register_goal(Goal(
@@ -220,6 +220,48 @@ def _register_builtin_goals() -> None:
             "group.status": "DELETED",
         },
         initial_hints={"group.identifier": "PROVIDED"},
+    ))
+
+    register_goal(Goal(
+        name="create_group",
+        description="Create a new group in Okta",
+        required_state={
+            "group.id": "KNOWN",
+            "group.status": "CREATED",
+        },
+        initial_hints={"group.profile_data": "PROVIDED"},
+    ))
+
+    register_goal(Goal(
+        name="audit_group",
+        description="Look up a group and list its members and app assignments",
+        required_state={
+            "group.id": "KNOWN",
+            "group.profile": "KNOWN",
+            "group.users": "ENUMERATED",
+            "group.apps": "ENUMERATED",
+        },
+        initial_hints={"group.identifier": "PROVIDED"},
+    ))
+
+    register_goal(Goal(
+        name="add_user_to_group",
+        description="Resolve a user and a group, then add the user to the group",
+        required_state={
+            "user.id": "KNOWN",
+            "group.id": "KNOWN",
+            "user.group_membership": "GRANTED",
+        },
+        initial_hints={"user.identifier": "PROVIDED", "group.identifier": "PROVIDED"},
+    ))
+
+    register_goal(Goal(
+        name="list_groups",
+        description="List all groups in the Okta organization",
+        required_state={
+            "group.list": "KNOWN",
+        },
+        initial_hints={},
     ))
 
 
