@@ -27,7 +27,7 @@ from typing import Any
 from loguru import logger
 
 from okta_mcp_server.utils.client import get_okta_client
-from okta_mcp_server.utils.pagination import paginate_all_results
+from okta_mcp_server.utils.pagination import extract_after_cursor, paginate_all_results
 
 
 # ---------------------------------------------------------------------------
@@ -1403,11 +1403,37 @@ async def _action_list_brands(params: dict, client) -> Any:
     brands, resp, err = await client.list_brands(**query)
     if err:
         raise RuntimeError(f"Okta API error listing brands: {err}")
-    brands = await _auto_paginate(brands, resp)
+
+    # Auto-paginate: try v2 SDK (has_next) first, then fall back to Link header cursor
+    if resp and hasattr(resp, "has_next") and resp.has_next():
+        brands = await _auto_paginate(brands, resp)
+    else:
+        all_brands = list(brands) if brands else []
+        cursor = extract_after_cursor(resp)
+        page = 1
+        while cursor and page < 50:
+            page_query = dict(query)
+            page_query["after"] = cursor
+            next_brands, next_resp, next_err = await client.list_brands(**page_query)
+            if next_err or not next_brands:
+                break
+            all_brands.extend(next_brands)
+            cursor = extract_after_cursor(next_resp)
+            page += 1
+        brands = all_brands
 
     if name:
         # Prefer exact case-insensitive name match
-        exact = [b for b in brands if getattr(b, "name", "").lower() == name.lower()]
+        # Support both SDK model objects (getattr) and dicts (.get)
+        def _brand_name(b) -> str:
+            n = getattr(b, "name", None)
+            if n is None and isinstance(b, dict):
+                n = b.get("name")
+            if n is None and hasattr(b, "model_dump"):
+                n = b.model_dump(by_alias=True).get("name")
+            return (n or "").lower()
+
+        exact = [b for b in brands if _brand_name(b) == name.lower()]
         if exact:
             return exact[0]
         if len(brands) == 1:

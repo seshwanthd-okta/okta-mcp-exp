@@ -31,7 +31,7 @@ from okta_mcp_server.server import mcp
 from okta_mcp_server.utils.client import get_okta_client
 from okta_mcp_server.utils.elicitation import DeleteConfirmation, elicit_or_fallback
 from okta_mcp_server.utils.messages import DELETE_BRAND
-from okta_mcp_server.utils.pagination import create_paginated_response, paginate_all_results
+from okta_mcp_server.utils.pagination import create_paginated_response, extract_after_cursor, paginate_all_results
 from okta_mcp_server.utils.validation import validate_ids
 
 
@@ -154,6 +154,26 @@ async def list_brands(
                 f"{pagination_info['pages_fetched']} page(s)"
             )
             return create_paginated_response(serialized, response, fetch_all_used=True, pagination_info=pagination_info)
+
+        # Fallback: manual pagination via Link header cursor when has_next() is unavailable
+        if fetch_all:
+            all_brands = list(brands)
+            cursor = extract_after_cursor(response)
+            page = 1
+            while cursor and page < 50:
+                page_kwargs = dict(kwargs)
+                page_kwargs["after"] = cursor
+                next_brands, next_response, next_err = await client.list_brands(**page_kwargs)
+                if next_err or not next_brands:
+                    break
+                all_brands.extend(next_brands)
+                cursor = extract_after_cursor(next_response)
+                page += 1
+            if len(all_brands) > len(brands):
+                pagination_info = {"pages_fetched": page, "total_items": len(all_brands), "stopped_early": False, "stop_reason": None}
+                serialized = [_serialize_brand(b) for b in all_brands]
+                logger.info(f"Successfully retrieved {len(all_brands)} brand(s) via cursor pagination across {page} page(s)")
+                return create_paginated_response(serialized, response, fetch_all_used=True, pagination_info=pagination_info)
 
         serialized = [_serialize_brand(b) for b in brands]
         logger.info(f"Successfully retrieved {len(brands)} brand(s)")

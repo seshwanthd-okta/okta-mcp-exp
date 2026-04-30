@@ -194,7 +194,7 @@ class TestGoalRegistry:
     def test_list_goals_returns_dicts(self):
         """list_goals returns serializable dicts."""
         goals = list_goals()
-        assert len(goals) >= 10
+        assert len(goals) >= 14
         for g in goals:
             assert "name" in g
             assert "description" in g
@@ -444,6 +444,34 @@ class TestCSPPlannerIntegration:
         assert result.success, f"Failed: {result.error}"
         assert "delete_group" in result.actions
 
+    def test_create_group_plan(self, kg):
+        """CSP solver generates a valid create_group workflow."""
+        result = plan_for_goal("create_group", kg=kg)
+        assert result.success, f"Failed: {result.error}"
+        assert "create_group" in result.actions
+
+    def test_audit_group_plan(self, kg):
+        """CSP solver generates a valid audit_group workflow."""
+        result = plan_for_goal("audit_group", kg=kg)
+        assert result.success, f"Failed: {result.error}"
+        assert "get_group" in result.actions
+        assert "list_group_users" in result.actions
+        assert "list_group_apps" in result.actions
+
+    def test_add_user_to_group_plan(self, kg):
+        """CSP solver generates a valid add_user_to_group workflow."""
+        result = plan_for_goal("add_user_to_group", kg=kg)
+        assert result.success, f"Failed: {result.error}"
+        assert "get_user" in result.actions
+        assert "get_group" in result.actions
+        assert "add_user_to_group" in result.actions
+
+    def test_list_groups_plan(self, kg):
+        """CSP solver generates a valid list_groups workflow."""
+        result = plan_for_goal("list_groups", kg=kg)
+        assert result.success, f"Failed: {result.error}"
+        assert "list_groups" in result.actions
+
     def test_ad_hoc_goal_state(self, kg):
         """Plan with an ad-hoc goal state (not from registry)."""
         result = plan_for_state(
@@ -522,7 +550,7 @@ class TestOrchestratorPlanForGoalTool:
         ctx = _make_ctx()
         result = await orchestrator_plan_for_goal(ctx)
         assert "available_goals" in result
-        assert len(result["available_goals"]) >= 10
+        assert len(result["available_goals"]) >= 14
 
     @pytest.mark.asyncio
     async def test_plan_with_goal_name(self):
