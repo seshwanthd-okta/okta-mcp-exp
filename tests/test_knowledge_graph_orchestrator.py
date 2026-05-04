@@ -29,7 +29,6 @@ from okta_mcp_server.tools.orchestrator.engine import (
     reset_session,
 )
 from okta_mcp_server.tools.orchestrator.knowledge_graph import (
-    Edge,
     EntityType,
     OktaKnowledgeGraph,
     OperationType,
@@ -159,8 +158,8 @@ class TestKGConstruction:
     def test_graph_has_nodes(self, kg):
         assert kg.get_stats()["total_nodes"] >= 11
 
-    def test_graph_has_edges(self, kg):
-        assert kg.get_stats()["total_edges"] >= 9
+    def test_graph_has_connections(self, kg):
+        assert kg.get_stats()["total_connections"] >= 9
 
     def test_no_intents_in_graph(self, kg):
         """The dynamic KG has NO predefined intents."""
@@ -182,44 +181,35 @@ class TestKGConstruction:
         node = kg.get_node("deactivate_user")
         assert node.is_destructive is True
 
-    def test_remove_user_from_group_is_iterable(self, kg):
+    def test_remove_user_from_group_has_iteration_binding(self, kg):
         node = kg.get_node("remove_user_from_group")
-        assert node.is_iterable is True
+        assert node.param_bindings.get("group_id") == "user.groups[]"
 
-    def test_edge_from_get_user_to_deactivate(self, kg):
-        edges = kg.get_outgoing_edges("get_user")
-        targets = [e.target for e in edges]
-        assert "deactivate_user" in targets
+    def test_enriched_outputs(self, kg):
+        node = kg.get_node("get_user")
+        assert isinstance(node.outputs, dict)
+        assert node.outputs["id"] == "user.id"
+        assert node.outputs["status"] == "user.status"
 
-    def test_edge_metadata(self, kg):
-        edges = kg.get_outgoing_edges("get_user")
-        deact_edge = next(e for e in edges if e.target == "deactivate_user")
-        assert deact_edge.source_output == "id"
-        assert deact_edge.target_param == "user_id"
+    def test_param_bindings(self, kg):
+        node = kg.get_node("deactivate_user")
+        assert node.param_bindings == {"user_id": "user.id"}
 
-    def test_iteration_edge(self, kg):
-        edges = kg.get_outgoing_edges("list_user_groups")
-        iter_edge = next(e for e in edges if e.target == "remove_user_from_group")
-        assert iter_edge.is_iteration is True
+    def test_virtual_adjacency_downstream(self, kg):
+        downstream = kg.get_downstream("get_user")
+        assert "deactivate_user" in downstream
+        assert "list_user_groups" in downstream
 
-    def test_add_edge_unknown_node_raises(self):
-        kg = OktaKnowledgeGraph()
-        kg.add_node(ToolNode(
-            action="test_a", entity_type=EntityType.USER,
-            operation=OperationType.READ, description="A",
-            required_params=[], outputs=[],
-        ))
-        with pytest.raises(ValueError, match="not in graph"):
-            kg.add_edge(Edge(
-                source="test_a", target="nonexistent",
-                source_output="id", target_param="user_id",
-            ))
+    def test_virtual_adjacency_upstream(self, kg):
+        upstream = kg.get_upstream("deactivate_user")
+        assert "get_user" in upstream
 
     def test_to_dict_serialisation(self, kg):
         data = kg.to_dict()
         assert "nodes" in data
-        assert "edges" in data
         assert "get_user" in data["nodes"]
+        # No edges key in the new model
+        assert "edges" not in data
 
     def test_singleton(self):
         kg1 = get_knowledge_graph()
@@ -300,9 +290,9 @@ class TestQueryReachable:
         deact = next(n for n in result["nodes"] if n["action"] == "deactivate_user")
         assert deact["depth"] == 1
 
-    def test_has_edges(self, kg):
+    def test_has_downstream(self, kg):
         result = kg.query_reachable("get_user")
-        assert len(result["edges"]) >= 8
+        assert len(result["nodes"]) >= 3
 
     def test_unknown_action(self, kg):
         result = kg.query_reachable("nonexistent")
@@ -336,14 +326,15 @@ class TestQueryPath:
     def test_get_user_to_deactivate(self, kg):
         path = kg.query_path("get_user", "deactivate_user")
         assert path is not None
-        assert len(path) == 1
-        assert path[0]["source"] == "get_user"
-        assert path[0]["target"] == "deactivate_user"
+        assert len(path) == 2  # [get_user, deactivate_user]
+        assert path[0] == "get_user"
+        assert path[1] == "deactivate_user"
 
     def test_get_user_to_remove_from_group(self, kg):
         path = kg.query_path("get_user", "remove_user_from_group")
         assert path is not None
-        assert len(path) >= 1
+        assert path[0] == "get_user"
+        assert path[-1] == "remove_user_from_group"
 
     def test_no_path(self, kg):
         path = kg.query_path("deactivate_user", "get_user")
@@ -434,7 +425,6 @@ class TestQueryGraphTool:
         ctx = _make_ctx()
         result = await orchestrator_query_graph(ctx, query_type="reachable", start_action="get_user")
         assert "nodes" in result
-        assert "edges" in result
 
     @pytest.mark.asyncio
     async def test_query_dependencies(self):
@@ -453,7 +443,7 @@ class TestQueryGraphTool:
             ctx, query_type="path", start_action="get_user", end_action="deactivate_user",
         )
         assert "path" in result
-        assert result["length"] == 1
+        assert result["length"] == 2
 
     @pytest.mark.asyncio
     async def test_query_node(self):
@@ -462,8 +452,8 @@ class TestQueryGraphTool:
         result = await orchestrator_query_graph(ctx, query_type="node", action="get_user")
         assert "node" in result
         assert result["node"]["action"] == "get_user"
-        assert "incoming_edges" in result
-        assert "outgoing_edges" in result
+        assert "upstream" in result
+        assert "downstream" in result
 
     @pytest.mark.asyncio
     async def test_query_stats(self):
@@ -478,7 +468,6 @@ class TestQueryGraphTool:
         ctx = _make_ctx()
         result = await orchestrator_query_graph(ctx, query_type="full")
         assert "nodes" in result
-        assert "edges" in result
 
     @pytest.mark.asyncio
     async def test_unknown_query_type(self):

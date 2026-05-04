@@ -83,7 +83,7 @@ def mini_kg() -> OktaKnowledgeGraph:
         operation=OperationType.READ,
         description="Get user by ID or login",
         required_params=["user_id_or_login"],
-        outputs=["id", "status", "profile"],
+        outputs={"id": "user.id", "status": "user.status", "profile": "user.profile"},
         preconditions={"user.identifier": "PROVIDED"},
         effects={"user.id": "KNOWN", "user.profile": "KNOWN", "user.status": "KNOWN"},
     ))
@@ -113,7 +113,7 @@ def mini_kg() -> OktaKnowledgeGraph:
         operation=OperationType.READ,
         description="List groups a user belongs to",
         required_params=["user_id"],
-        outputs=["items"],
+        outputs={"items": "user.groups[]"},
         preconditions={"user.id": "KNOWN"},
         effects={"user.groups": "ENUMERATED"},
     ))
@@ -587,7 +587,7 @@ class TestOrchestratorPlanForGoalTool:
 
     @pytest.mark.asyncio
     async def test_plan_without_target_identifier(self):
-        """Plan without target_identifier returns action sequence but no executable plan."""
+        """Plan is still built without target_identifier — params just won't be pre-filled."""
         from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
             orchestrator_plan_for_goal,
         )
@@ -597,7 +597,7 @@ class TestOrchestratorPlanForGoalTool:
             goal_name="offboard_user",
         )
         assert result["success"] is True
-        assert "plan" not in result  # no plan built without target_identifier
+        assert "plan" in result  # plan is built even without target_identifier
 
     @pytest.mark.asyncio
     async def test_plan_unknown_goal(self):

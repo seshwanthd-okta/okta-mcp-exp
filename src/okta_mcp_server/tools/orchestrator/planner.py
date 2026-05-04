@@ -22,8 +22,8 @@ satisfy unsatisfied goal predicates, selects the cheapest action, adds
 that action's preconditions as new sub-goals, and repeats until all
 predicates are satisfied by the initial state.
 
-Goals are registered in a goal registry. Users can also supply ad-hoc
-goal states directly.
+Goals are registered in a goal registry for convenience.  Users can also
+supply ad-hoc goal states directly for custom workflows.
 """
 
 from __future__ import annotations

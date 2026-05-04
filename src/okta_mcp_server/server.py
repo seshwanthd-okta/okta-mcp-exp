@@ -97,7 +97,7 @@ def main():
     stats = kg.get_stats()
     logger.info(
         f"Knowledge graph loaded: {stats['total_nodes']} tool nodes, "
-        f"{stats['total_edges']} edges"
+        f"{stats['total_connections']} connections"
     )
 
     mcp.run()
