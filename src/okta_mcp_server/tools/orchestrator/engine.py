@@ -1086,18 +1086,37 @@ async def _action_list_policies(params: dict, client) -> list:
     if not policy_type:
         raise ValueError("list_policies requires 'type'")
 
-    query = {"type": policy_type}
-    if params.get("status"):
-        query["status"] = params["status"]
-    if params.get("q"):
-        query["q"] = params["q"]
-    if params.get("limit"):
-        query["limit"] = str(int(params["limit"]))
-
-    policies, resp, err = await client.list_policies(**query)
+    # Bypass SDK pydantic deserialization — AccessPolicy model expects
+    # _embedded.resourceType as a dict but the API returns a string ('APP'),
+    # causing validation errors.  Using raw HTTP avoids this SDK bug.
+    method, url, header_params, body, _post_params = (
+        client._list_policies_serialize(
+            type=policy_type,
+            status=params.get("status"),
+            q=params.get("q"),
+            after=params.get("after"),
+            limit=params.get("limit"),
+            expand=None,
+            sort_by=None,
+            resource_id=None,
+            _request_auth=None,
+            _content_type=None,
+            _headers=None,
+            _host_index=0,
+        )
+    )
+    request, err = await client._request_executor.create_request(
+        method, url, body, header_params, {}, keep_empty_params=False
+    )
+    if err:
+        raise RuntimeError(f"Failed to create list_policies request: {err}")
+    response, response_body, err = await client._request_executor.execute(request)
     if err:
         raise RuntimeError(f"Okta API error listing policies: {err}")
-    return await _auto_paginate(policies, resp)
+    if not response_body:
+        return []
+    policies = json.loads(response_body) if isinstance(response_body, str) else response_body
+    return policies if isinstance(policies, list) else []
 
 
 async def _action_get_policy(params: dict, client) -> Any:

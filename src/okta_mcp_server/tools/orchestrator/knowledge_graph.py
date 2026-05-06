@@ -744,7 +744,7 @@ def build_okta_knowledge_graph() -> OktaKnowledgeGraph:
         optional_params=["status", "q", "limit", "after"],
         outputs={'items': 'policy.list[]'},
         tags=["search", "bulk", "filter"],
-        preconditions={"policy.type": "KNOWN"},
+        preconditions={},
         effects={"policy.list": "KNOWN"},
     ))
     kg.add_node(ToolNode(

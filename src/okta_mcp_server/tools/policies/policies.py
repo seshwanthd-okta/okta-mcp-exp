@@ -33,6 +33,9 @@ async def list_policies(
     q: Optional[str] = None,
     limit: Optional[int] = 20,
     after: Optional[str] = None,
+    expand: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    resource_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """List all the policies from the Okta organization.
 
@@ -44,6 +47,9 @@ async def list_policies(
         q (str, optional): A query string to search policies by name.
         limit (int, optional): Number of results to return (min 20, max 100).
         after (str, optional): Specifies the pagination cursor for the next page of policies.
+        expand (str, optional): Expand options for the policy response.
+        sort_by (str, optional): Sort the results by a specific field (e.g., 'name', 'created').
+        resource_id (str, optional): Reference to the associated authorization server.
 
     Returns:
         Dict containing:
@@ -51,7 +57,7 @@ async def list_policies(
             - error (str): Error message if the operation fails
     """
     logger.info("Listing policies from Okta organization")
-    logger.debug(f"Type: '{type}', Status: '{status}', Q: '{q}', limit: {limit}")
+    logger.debug(f"Type: '{type}', Status: '{status}', Q: '{q}', limit: {limit}, sort_by: {sort_by}")
 
     # Validate limit parameter range
     if limit is not None:
@@ -73,6 +79,12 @@ async def list_policies(
             params["q"] = q
         if after:
             params["after"] = after
+        if expand:
+            params["expand"] = expand
+        if sort_by:
+            params["sort_by"] = sort_by
+        if resource_id and resource_id != "null":
+            params["resource_id"] = resource_id
         if "limit" in params and params["limit"] is not None:
             params["limit"] = str(params["limit"])
 
