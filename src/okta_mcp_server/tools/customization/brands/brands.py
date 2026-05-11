@@ -68,7 +68,6 @@ def _build_default_app(default_app_dict: Dict[str, Any]) -> DefaultApp:
 # list_brands
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 async def list_brands(
     ctx: Context,
     expand: Optional[List[str]] = None,
@@ -188,7 +187,6 @@ async def list_brands(
 # get_brand
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id")
 async def get_brand(
     ctx: Context,
@@ -234,7 +232,6 @@ async def get_brand(
 # create_brand
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 async def create_brand(
     ctx: Context,
     name: str,
@@ -295,7 +292,6 @@ async def create_brand(
 # replace_brand
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id")
 async def replace_brand(
     ctx: Context,
@@ -385,7 +381,6 @@ async def replace_brand(
 # delete_brand
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id")
 async def delete_brand(
     ctx: Context,
@@ -447,7 +442,6 @@ async def delete_brand(
 # list_brand_domains
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id")
 async def list_brand_domains(
     ctx: Context,
@@ -504,3 +498,32 @@ async def list_brand_domains(
     except Exception as e:
         logger.error(f"Exception while listing domains for brand {brand_id}: {type(e).__name__}: {e}")
         return {"error": str(e)}
+
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    list_brands,
+    get_brand,
+    create_brand,
+    replace_brand,
+    delete_brand,
+    list_brand_domains,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "list_brands": list_brands,
+    "get_brand": get_brand,
+    "create_brand": create_brand,
+    "replace_brand": replace_brand,
+    "delete_brand": delete_brand,
+    "list_brand_domains": list_brand_domains,
+}

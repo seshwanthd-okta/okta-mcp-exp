@@ -17,11 +17,10 @@ from okta_mcp_server.server import mcp
 from okta_mcp_server.utils.client import get_okta_client
 from okta_mcp_server.utils.elicitation import DeactivateConfirmation, DeleteConfirmation, elicit_or_fallback
 from okta_mcp_server.utils.messages import DEACTIVATE_USER, DELETE_USER
-from okta_mcp_server.utils.pagination import build_query_params, create_paginated_response, paginate_all_results
+from okta_mcp_server.utils.pagination import auto_paginate, build_query_params, create_paginated_response, paginate_all_results
 from okta_mcp_server.utils.validation import validate_ids
 
 
-@mcp.tool()
 async def list_users(
     ctx: Context,
     search: str = "",
@@ -119,7 +118,6 @@ async def list_users(
         return {"error": f"Exception: {e}"}
 
 
-@mcp.tool()
 async def get_user_profile_attributes(ctx: Context = None) -> list:
     """List all user profile attributes supported by your Okta org.
     This is helpful in case you need to check if the user profile attribute is valid.
@@ -156,7 +154,6 @@ async def get_user_profile_attributes(ctx: Context = None) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("user_id")
 async def get_user(user_id: str, ctx: Context = None) -> list:
     """Get a user by ID from the Okta organization
@@ -190,7 +187,6 @@ async def get_user(user_id: str, ctx: Context = None) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 async def create_user(profile: dict, ctx: Context = None) -> list:
     """Create a user in the Okta organization.
 
@@ -228,7 +224,6 @@ async def create_user(profile: dict, ctx: Context = None) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("user_id")
 async def update_user(user_id: str, profile: dict, ctx: Context = None) -> list:
     """Update a user in the Okta organization.
@@ -265,7 +260,6 @@ async def update_user(user_id: str, profile: dict, ctx: Context = None) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("user_id")
 async def deactivate_user(user_id: str, ctx: Context = None) -> list:
     """Deactivates a user from the Okta organization.
@@ -313,7 +307,6 @@ async def deactivate_user(user_id: str, ctx: Context = None) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("user_id")
 async def delete_deactivated_user(user_id: str, ctx: Context = None) -> list:
     """Delete a user from the Okta organization who has already been deactivated or deprovisioned.
@@ -358,3 +351,115 @@ async def delete_deactivated_user(user_id: str, ctx: Context = None) -> list:
     except Exception as e:
         logger.error(f"Exception while deleting user {user_id}: {type(e).__name__}: {e}")
         return [f"Exception: {e}"]
+
+
+
+# ---------------------------------------------------------------------------
+# Engine-only functions (not exposed as MCP tools)
+# ---------------------------------------------------------------------------
+
+
+async def suspend_user(user_id: str, ctx: Context = None) -> str:
+    """Suspend a user by ID. The user can be unsuspended later."""
+    logger.info(f"Suspending user {user_id}")
+
+    manager = ctx.request_context.lifespan_context.okta_auth_manager
+    client = await get_okta_client(manager)
+
+    result = await client.suspend_user(user_id)
+    err = result[-1] if isinstance(result, tuple) else None
+    if err:
+        raise RuntimeError(f"Okta API error suspending user {user_id}: {err}")
+    return f"User {user_id} suspended successfully"
+
+
+async def activate_user(user_id: str, send_email: bool = True, ctx: Context = None):
+    """Activate a user account. Optionally send an activation email."""
+    logger.info(f"Activating user {user_id} (send_email={send_email})")
+
+    manager = ctx.request_context.lifespan_context.okta_auth_manager
+    client = await get_okta_client(manager)
+
+    if isinstance(send_email, str):
+        send_email = send_email.lower() not in ("false", "0", "no")
+
+    token, _, err = await client.activate_user(user_id, send_email=send_email)
+    if err:
+        raise RuntimeError(f"Okta API error activating user {user_id}: {err}")
+    return {
+        "status": "activated",
+        "user_id": user_id,
+        "activation_token": getattr(token, "activationToken", None) if token else None,
+    }
+
+
+async def clear_user_sessions(user_id: str, ctx: Context = None) -> str:
+    """Revoke all active sessions for a user."""
+    logger.info(f"Clearing sessions for user {user_id}")
+
+    manager = ctx.request_context.lifespan_context.okta_auth_manager
+    client = await get_okta_client(manager)
+
+    await client.revoke_user_sessions(user_id, oauth_tokens=True)
+    return f"All active sessions revoked for user {user_id}"
+
+
+async def list_user_groups(user_id: str, ctx: Context = None) -> list:
+    """List all groups a user belongs to."""
+    logger.info(f"Listing groups for user {user_id}")
+
+    manager = ctx.request_context.lifespan_context.okta_auth_manager
+    client = await get_okta_client(manager)
+
+    groups, resp, err = await client.list_user_groups(user_id)
+    if err:
+        raise RuntimeError(f"Okta API error listing groups for user {user_id}: {err}")
+    return await auto_paginate(groups, resp)
+
+
+async def list_user_app_assignments(user_id: str, ctx: Context = None) -> list:
+    """List all application assignments for a user."""
+    logger.info(f"Listing app assignments for user {user_id}")
+
+    manager = ctx.request_context.lifespan_context.okta_auth_manager
+    client = await get_okta_client(manager)
+
+    apps, resp, err = await client.list_app_links(user_id)
+    if err:
+        raise RuntimeError(f"Okta API error listing app assignments for user {user_id}: {err}")
+    return await auto_paginate(apps, resp)
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    list_users,
+    get_user_profile_attributes,
+    get_user,
+    create_user,
+    update_user,
+    deactivate_user,
+    delete_deactivated_user,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "list_users": list_users,
+    "get_user": get_user,
+    "create_user": create_user,
+    "update_user": update_user,
+    "deactivate_user": deactivate_user,
+    "delete_deactivated_user": delete_deactivated_user,
+    "suspend_user": suspend_user,
+    "activate_user": activate_user,
+    "clear_user_sessions": clear_user_sessions,
+    "get_user_profile_attributes": get_user_profile_attributes,
+    "list_user_groups": list_user_groups,
+    "list_user_app_assignments": list_user_app_assignments,
+}

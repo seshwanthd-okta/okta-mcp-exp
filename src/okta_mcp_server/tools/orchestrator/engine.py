@@ -16,18 +16,18 @@ intermediate steps — it gets one final context object.
 
 from __future__ import annotations
 
-import json
+import inspect
 import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from types import SimpleNamespace
 from typing import Any
 
 from loguru import logger
 
 from okta_mcp_server.utils.client import get_okta_client
-from okta_mcp_server.utils.pagination import extract_after_cursor, paginate_all_results
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +172,9 @@ def get_session() -> SessionContext:
 
 def reset_session() -> None:
     """Reset session state — used in tests."""
-    global _session
+    global _session, _DISPATCHER
     _session = SessionContext()
+    _DISPATCHER = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,12 +183,20 @@ def reset_session() -> None:
 
 _VAR_PATTERN = re.compile(r"\$step(\d+)\.(.+)")
 _BARE_STEP_PATTERN = re.compile(r"\$step(\d+)$")
+_INLINE_VAR_PATTERN = re.compile(r"\$step(\d+)\.([a-zA-Z_][a-zA-Z0-9_.]*)")
 
 
 def _resolve_value(value: Any, plan: Plan) -> Any:
-    """Resolve $stepN.field or bare $stepN references in a value."""
+    """Resolve $stepN.field references in a value.
+
+    Supports three modes:
+      1. Exact match:  "$step1.id"           → returns the raw value (object, list, etc.)
+      2. Bare step:    "$step1"              → returns entire step result
+      3. Inline/template: "target.id eq \"$step1.id\""  → string interpolation
+         Multiple refs in one string are supported.
+    """
     if isinstance(value, str):
-        # First try $stepN.field
+        # First try exact $stepN.field (returns raw typed value, not stringified)
         m = _VAR_PATTERN.fullmatch(value)
         if m:
             step_num = int(m.group(1))
@@ -198,6 +207,17 @@ def _resolve_value(value: Any, plan: Plan) -> Any:
         if m2:
             step_num = int(m2.group(1))
             return plan.results.get(step_num)
+        # Finally, try inline interpolation: replace all $stepN.field occurrences
+        # within a larger string (e.g. filter expressions)
+        if "$step" in value:
+            def _replace_inline(match: re.Match) -> str:
+                step_num = int(match.group(1))
+                field_path = match.group(2)
+                resolved = _extract_field(plan.results.get(step_num), field_path)
+                if resolved is None:
+                    return match.group(0)  # leave unresolved reference as-is
+                return str(resolved)
+            return _INLINE_VAR_PATTERN.sub(_replace_inline, value)
         return value
     if isinstance(value, dict):
         return {k: _resolve_value(v, plan) for k, v in value.items()}
@@ -296,13 +316,13 @@ async def execute_plan(plan: Plan, manager) -> Plan:
         if step.for_each:
             items = _resolve_value(step.for_each, plan)
             if isinstance(items, list):
-                await _execute_for_each(step, items, resolved_params, client, plan, session)
+                await _execute_for_each(step, items, resolved_params, client, plan, session, manager)
                 continue
 
         # Execute single step
         start = time.monotonic()
         try:
-            result_data = await _execute_step(step.action, resolved_params, client)
+            result_data = await _execute_step(step.action, resolved_params, client, manager)
             elapsed = (time.monotonic() - start) * 1000
 
             step.result = StepResult(
@@ -356,6 +376,7 @@ async def _execute_for_each(
     client,
     plan: Plan,
     session: SessionContext,
+    manager,
 ) -> None:
     """Execute a step once per item in a list (e.g. remove user from each group)."""
     import time
@@ -381,7 +402,7 @@ async def _execute_for_each(
             iteration_params["_item"] = item
 
         try:
-            result = await _execute_step(step.action, iteration_params, client)
+            result = await _execute_step(step.action, iteration_params, client, manager)
             all_results.append(result)
             session.total_api_calls += 1
         except Exception as exc:
@@ -414,1265 +435,159 @@ async def _execute_for_each(
 
 
 # ---------------------------------------------------------------------------
-# Action dispatcher — maps action names to Okta SDK calls
+# Engine context — lightweight stand-in for MCP Context
 # ---------------------------------------------------------------------------
 
-# This is the core mapping. Each action corresponds to a specific Okta SDK
-# method.  The orchestrator calls these directly — it does NOT go through
-# the MCP tool layer (no round-trips, no decorators, no elicitation).
+def _make_engine_ctx(manager, client=None):
+    """Create a minimal context object that tool functions can use.
 
-async def _execute_step(action: str, params: dict, client) -> Any:
-    """Dispatch an action to the appropriate Okta SDK method."""
+    Tool functions access ``ctx.request_context.lifespan_context.okta_auth_manager``
+    to obtain an Okta client.  This helper builds a lightweight namespace that
+    satisfies that attribute path so the same functions work when called from
+    the orchestrator engine (where there is no real MCP Context).
+
+    When *client* is supplied the resolved client is cached on the manager
+    wrapper so that ``get_okta_client()`` returns it immediately instead of
+    creating a new one.
+
+    ``supports_elicitation(ctx)`` will return ``False`` for this object, so
+    destructive operations auto-confirm via ``auto_confirm_on_fallback``.
+    """
+    engine_manager = manager
+    if client is not None:
+        engine_manager = SimpleNamespace(
+            _resolved_client=client,
+            org_url=getattr(manager, "org_url", None),
+        )
+    return SimpleNamespace(
+        request_context=SimpleNamespace(
+            lifespan_context=SimpleNamespace(
+                okta_auth_manager=engine_manager,
+            ),
+        ),
+        _engine_mode=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Action dispatcher — delegates to tool functions directly
+# ---------------------------------------------------------------------------
+
+# Each tool module exposes an ENGINE_ACTIONS dict that maps action names to
+# the actual tool functions (the same functions registered as MCP tools).
+# The orchestrator auto-unpacks params to match each function's signature.
+
+_DISPATCHER: dict | None = None
+
+
+def _get_dispatcher() -> dict:
+    """Build and cache the action → handler mapping from all tool modules."""
+    global _DISPATCHER
+    if _DISPATCHER is not None:
+        return _DISPATCHER
+
+    from okta_mcp_server.tools.users.users import ENGINE_ACTIONS as _USER_ACTIONS
+    from okta_mcp_server.tools.groups.groups import ENGINE_ACTIONS as _GROUP_ACTIONS
+    from okta_mcp_server.tools.applications.applications import ENGINE_ACTIONS as _APP_ACTIONS
+    from okta_mcp_server.tools.policies.policies import ENGINE_ACTIONS as _POLICY_ACTIONS
+    from okta_mcp_server.tools.device_assurance.device_assurance import ENGINE_ACTIONS as _DA_ACTIONS
+    from okta_mcp_server.tools.system_logs.system_logs import ENGINE_ACTIONS as _LOG_ACTIONS
+    from okta_mcp_server.tools.customization.brands.brands import ENGINE_ACTIONS as _BRAND_ACTIONS
+    from okta_mcp_server.tools.customization.themes.themes import ENGINE_ACTIONS as _THEME_ACTIONS
+    # New tool modules
+    from okta_mcp_server.tools.groups.group_owners import ENGINE_ACTIONS as _GROUP_OWNER_ACTIONS
+    from okta_mcp_server.tools.groups.group_rules import ENGINE_ACTIONS as _GROUP_RULE_ACTIONS
+    from okta_mcp_server.tools.users.user_lifecycle import ENGINE_ACTIONS as _USER_LIFECYCLE_ACTIONS
+    from okta_mcp_server.tools.users.user_credentials import ENGINE_ACTIONS as _USER_CREDENTIAL_ACTIONS
+    from okta_mcp_server.tools.users.user_factors import ENGINE_ACTIONS as _USER_FACTOR_ACTIONS
+    from okta_mcp_server.tools.users.user_grants import ENGINE_ACTIONS as _USER_GRANT_ACTIONS
+    from okta_mcp_server.tools.users.user_types import ENGINE_ACTIONS as _USER_TYPE_ACTIONS
+    from okta_mcp_server.tools.users.user_extended import ENGINE_ACTIONS as _USER_EXTENDED_ACTIONS
+    from okta_mcp_server.tools.devices import ENGINE_ACTIONS as _DEVICE_ACTIONS
+    from okta_mcp_server.tools.device_integrations import ENGINE_ACTIONS as _DEVICE_INTEGRATION_ACTIONS
+    from okta_mcp_server.tools.device_posture_checks import ENGINE_ACTIONS as _DEVICE_POSTURE_ACTIONS
+    from okta_mcp_server.tools.log_streaming import ENGINE_ACTIONS as _LOG_STREAM_ACTIONS
+    from okta_mcp_server.tools.profile_mappings import ENGINE_ACTIONS as _PROFILE_MAPPING_ACTIONS
+    from okta_mcp_server.tools.policies.policies_extended import ENGINE_ACTIONS as _POLICY_EXT_ACTIONS
+    from okta_mcp_server.tools.governance import ENGINE_ACTIONS as _GOV_ACTIONS
+    from okta_mcp_server.tools.governance_end_user import ENGINE_ACTIONS as _GOV_EU_ACTIONS
+
+    _DISPATCHER = {}
+    _DISPATCHER.update(_USER_ACTIONS)
+    _DISPATCHER.update(_GROUP_ACTIONS)
+    _DISPATCHER.update(_APP_ACTIONS)
+    _DISPATCHER.update(_POLICY_ACTIONS)
+    _DISPATCHER.update(_DA_ACTIONS)
+    _DISPATCHER.update(_LOG_ACTIONS)
+    _DISPATCHER.update(_BRAND_ACTIONS)
+    _DISPATCHER.update(_THEME_ACTIONS)
+    # New modules
+    _DISPATCHER.update(_GROUP_OWNER_ACTIONS)
+    _DISPATCHER.update(_GROUP_RULE_ACTIONS)
+    _DISPATCHER.update(_USER_LIFECYCLE_ACTIONS)
+    _DISPATCHER.update(_USER_CREDENTIAL_ACTIONS)
+    _DISPATCHER.update(_USER_FACTOR_ACTIONS)
+    _DISPATCHER.update(_USER_GRANT_ACTIONS)
+    _DISPATCHER.update(_USER_TYPE_ACTIONS)
+    _DISPATCHER.update(_USER_EXTENDED_ACTIONS)
+    _DISPATCHER.update(_DEVICE_ACTIONS)
+    _DISPATCHER.update(_DEVICE_INTEGRATION_ACTIONS)
+    _DISPATCHER.update(_DEVICE_POSTURE_ACTIONS)
+    _DISPATCHER.update(_LOG_STREAM_ACTIONS)
+    _DISPATCHER.update(_PROFILE_MAPPING_ACTIONS)
+    _DISPATCHER.update(_POLICY_EXT_ACTIONS)
+    _DISPATCHER.update(_GOV_ACTIONS)
+    _DISPATCHER.update(_GOV_EU_ACTIONS)
+    return _DISPATCHER
+
+
+async def _execute_step(action: str, params: dict, client, manager) -> Any:
+    """Dispatch an action to the appropriate tool function.
+
+    Uses ``inspect.signature`` to auto-unpack the *params* dict into the
+    function's keyword arguments and injects a lightweight engine context
+    for the ``ctx`` parameter.
+    """
 
     dispatcher = _get_dispatcher()
     if action not in dispatcher:
         raise ValueError(f"Unknown action: '{action}'. Available: {sorted(dispatcher.keys())}")
 
     handler = dispatcher[action]
-    return await handler(params, client)
-
-
-def _get_dispatcher() -> dict:
-    """Return the action → handler mapping. Lazy-built on first call."""
-    return {
-        # ── Users ──
-        "list_users": _action_list_users,
-        "get_user": _action_get_user,
-        "create_user": _action_create_user,
-        "update_user": _action_update_user,
-        "deactivate_user": _action_deactivate_user,
-        "delete_deactivated_user": _action_delete_deactivated_user,
-        "suspend_user": _action_suspend_user,
-        "activate_user": _action_activate_user,
-        "clear_user_sessions": _action_clear_user_sessions,
-        "get_user_profile_attributes": _action_get_user_profile_attributes,
-
-        # ── Groups ──
-        "list_groups": _action_list_groups,
-        "get_group": _action_get_group,
-        "create_group": _action_create_group,
-        "update_group": _action_update_group,
-        "delete_group": _action_delete_group,
-        "list_group_users": _action_list_group_users,
-        "list_group_apps": _action_list_group_apps,
-        "list_user_groups": _action_list_user_groups,
-        "add_user_to_group": _action_add_user_to_group,
-        "remove_user_from_group": _action_remove_user_from_group,
-
-        # ── Applications ──
-        "list_applications": _action_list_applications,
-        "get_application": _action_get_application,
-        "create_application": _action_create_application,
-        "update_application": _action_update_application,
-        "delete_application": _action_delete_application,
-        "activate_application": _action_activate_application,
-        "deactivate_application": _action_deactivate_application,
-        "list_user_app_assignments": _action_list_user_app_assignments,
-
-        # ── Policies ──
-        "list_policies": _action_list_policies,
-        "get_policy": _action_get_policy,
-        "create_policy": _action_create_policy,
-        "update_policy": _action_update_policy,
-        "delete_policy": _action_delete_policy,
-        "activate_policy": _action_activate_policy,
-        "deactivate_policy": _action_deactivate_policy,
-
-        # ── Policy Rules ──
-        "list_policy_rules": _action_list_policy_rules,
-        "get_policy_rule": _action_get_policy_rule,
-        "create_policy_rule": _action_create_policy_rule,
-        "update_policy_rule": _action_update_policy_rule,
-        "delete_policy_rule": _action_delete_policy_rule,
-        "activate_policy_rule": _action_activate_policy_rule,
-        "deactivate_policy_rule": _action_deactivate_policy_rule,
-
-        # ── Device Assurance ──
-        "list_device_assurance_policies": _action_list_device_assurance_policies,
-        "get_device_assurance_policy": _action_get_device_assurance_policy,
-        "create_device_assurance_policy": _action_create_device_assurance_policy,
-        "replace_device_assurance_policy": _action_replace_device_assurance_policy,
-        "delete_device_assurance_policy": _action_delete_device_assurance_policy,
-
-        # ── System Logs ──
-        "get_logs": _action_get_logs,
-
-        # ── Brands ──
-        "list_brands": _action_list_brands,
-        "get_brand": _action_get_brand,
-        "create_brand": _action_create_brand,
-        "replace_brand": _action_replace_brand,
-        "delete_brand": _action_delete_brand,
-        "list_brand_domains": _action_list_brand_domains,
-
-        # ── Themes ──
-        "list_brand_themes": _action_list_brand_themes,
-        "get_brand_theme": _action_get_brand_theme,
-        "replace_brand_theme": _action_replace_brand_theme,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Pagination helper for action handlers
-# ---------------------------------------------------------------------------
-
-async def _auto_paginate(items, response) -> list:
-    """Auto-paginate through all pages of Okta SDK results.
-
-    If the response indicates more pages, uses ``paginate_all_results``
-    to fetch every page so the orchestrator always returns the full
-    result set without artificial limits.
-    """
-    if not items:
-        return []
-    if response and hasattr(response, "has_next") and response.has_next():
-        all_items, info = await paginate_all_results(response, items)
-        logger.debug(
-            f"Auto-paginated: {info['total_items']} items across "
-            f"{info['pages_fetched']} pages"
-        )
-        return all_items
-    return list(items)
-
-
-# ---------------------------------------------------------------------------
-# Action handlers — thin wrappers around Okta SDK
-# ---------------------------------------------------------------------------
-
-async def _action_list_users(params: dict, client) -> list:
-    """Search/list users. Accepts 'search', 'filter', 'q', 'limit'."""
-    query = {}
-    if params.get("search"):
-        query["search"] = params["search"]
-    if params.get("filter"):
-        query["filter"] = params["filter"]
-    if params.get("q"):
-        query["q"] = params["q"]
-    if params.get("limit"):
-        query["limit"] = int(params["limit"])
-
-    users, resp, err = await client.list_users(**query)
-    if err:
-        raise RuntimeError(f"Okta API error listing users: {err}")
-    return await _auto_paginate(users, resp)
-
-
-async def _action_get_user(params: dict, client) -> Any:
-    """Get a single user by ID, login, or display name.
-
-    Tries a direct ``GET /users/{userId}`` first.  If the SDK returns ``None``
-    (e.g. the identifier is a display name rather than an Okta ID or email),
-    falls back to ``list_users?q=<identifier>`` and returns the first match.
-    """
-    user_id = params.get("user_id") or params.get("login")
-    if not user_id:
-        raise ValueError("get_user requires 'user_id' or 'login'")
-
-    user, _, err = await client.get_user(user_id)
-
-    # Direct lookup may silently return None when the identifier is a display
-    # name or partial name that Okta doesn't recognise as an ID/login.
-    if err or user is None:
-        logger.debug(
-            f"Direct lookup for '{user_id}' returned None/error — "
-            "falling back to list_users search"
-        )
-        users, _, search_err = await client.list_users(q=user_id, limit=5)
-        if search_err:
-            raise RuntimeError(f"Okta API error finding user '{user_id}': {search_err}")
-        if not users:
-            raise RuntimeError(
-                f"No user found matching '{user_id}'. "
-                "Try providing the user's email or Okta user ID."
-            )
-        # If there are multiple matches, pick the one whose display name is
-        # closest to the query (exact first-name + last-name match preferred).
-        query_lower = user_id.strip().lower()
-        for candidate in users:
-            profile = getattr(candidate, "profile", None)
-            if profile:
-                full_name = (
-                    f"{getattr(profile, 'firstName', '')} "
-                    f"{getattr(profile, 'lastName', '')}".strip().lower()
-                )
-                if full_name == query_lower:
-                    logger.info(f"Resolved '{user_id}' → user id={candidate.id}")
-                    return candidate
-        # No exact match — return the first result and log a warning
-        logger.warning(
-            f"No exact display-name match for '{user_id}'; "
-            f"using first search result (id={users[0].id})"
-        )
-        return users[0]
-
-    return user
-
-
-async def _action_deactivate_user(params: dict, client) -> str:
-    """Deactivate a user by ID. No elicitation — orchestrator handles approval."""
-    user_id = params.get("user_id")
-    if not user_id:
-        raise ValueError("deactivate_user requires 'user_id'")
-
-    result = await client.deactivate_user(user_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deactivating user {user_id}: {err}")
-    return f"User {user_id} deactivated successfully"
-
-
-async def _action_list_user_groups(params: dict, client) -> list:
-    """List all groups a user belongs to."""
-    user_id = params.get("user_id")
-    if not user_id:
-        raise ValueError("list_user_groups requires 'user_id'")
-
-    groups, resp, err = await client.list_user_groups(user_id)
-    if err:
-        raise RuntimeError(f"Okta API error listing groups for user {user_id}: {err}")
-    return await _auto_paginate(groups, resp)
-
-
-async def _action_remove_user_from_group(params: dict, client) -> str:
-    """Remove a user from a group."""
-    group_id = params.get("group_id")
-    user_id = params.get("user_id")
-    if not group_id or not user_id:
-        raise ValueError("remove_user_from_group requires 'group_id' and 'user_id'")
-
-    result = await client.unassign_user_from_group(group_id, user_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error removing user {user_id} from group {group_id}: {err}")
-    return f"User {user_id} removed from group {group_id}"
-
-
-async def _action_list_user_app_assignments(params: dict, client) -> list:
-    """List all application assignments for a user."""
-    user_id = params.get("user_id")
-    if not user_id:
-        raise ValueError("list_user_app_assignments requires 'user_id'")
-
-    apps, resp, err = await client.list_app_links(user_id)
-    if err:
-        raise RuntimeError(f"Okta API error listing app assignments for user {user_id}: {err}")
-    return await _auto_paginate(apps, resp)
-
-
-async def _action_suspend_user(params: dict, client) -> str:
-    """Suspend a user by ID. The user can be unsuspended later."""
-    user_id = params.get("user_id")
-    if not user_id:
-        raise ValueError("suspend_user requires 'user_id'")
-
-    result = await client.suspend_user(user_id)
-    err = result[-1] if isinstance(result, tuple) else None
-    if err:
-        raise RuntimeError(f"Okta API error suspending user {user_id}: {err}")
-    return f"User {user_id} suspended successfully"
-
-
-async def _action_activate_user(params: dict, client) -> Any:
-    """Activate a user account. Optionally send an activation email.
-
-    Params:
-        user_id (str): Okta user ID.
-        send_email (bool): Whether to send an activation email (default True).
-    """
-    user_id = params.get("user_id")
-    if not user_id:
-        raise ValueError("activate_user requires 'user_id'")
-
-    send_email = params.get("send_email", True)
-    if isinstance(send_email, str):
-        send_email = send_email.lower() not in ("false", "0", "no")
-
-    token, _, err = await client.activate_user(user_id, send_email=send_email)
-    if err:
-        raise RuntimeError(f"Okta API error activating user {user_id}: {err}")
-    return {
-        "status": "activated",
-        "user_id": user_id,
-        "activation_token": getattr(token, "activationToken", None) if token else None,
-    }
-
-
-async def _action_clear_user_sessions(params: dict, client) -> str:
-    """Revoke all active sessions for a user.
-
-    Params:
-        user_id (str): Okta user ID.
-        keep_current (bool): Whether to keep the current session (default False).
-    """
-    user_id = params.get("user_id")
-    if not user_id:
-        raise ValueError("clear_user_sessions requires 'user_id'")
-
-    await client.revoke_user_sessions(user_id, oauth_tokens=True)
-    return f"All active sessions revoked for user {user_id}"
-
-
-async def _action_add_user_to_group(params: dict, client) -> str:
-    """Add a user to a group.
-
-    Params:
-        user_id (str): Okta user ID.
-        group_id (str): Okta group ID.
-    """
-    group_id = params.get("group_id")
-    user_id = params.get("user_id")
-    if not group_id or not user_id:
-        raise ValueError("add_user_to_group requires 'group_id' and 'user_id'")
-
-    result = await client.assign_user_to_group(group_id, user_id)
-    err = result[-1] if isinstance(result, tuple) else None
-    if err:
-        raise RuntimeError(f"Okta API error adding user {user_id} to group {group_id}: {err}")
-    return f"User {user_id} added to group {group_id}"
-
-
-async def _action_get_group(params: dict, client) -> Any:
-    """Get a group by ID or name.
-
-    Params:
-        group_id (str): Okta group ID (preferred).
-        name (str): Group name (falls back to search if group_id not provided).
-    """
-    group_id = params.get("group_id")
-    if group_id:
-        group, _, err = await client.get_group(group_id)
-        if err:
-            raise RuntimeError(f"Okta API error fetching group {group_id}: {err}")
-        return group
-
-    name = params.get("name")
-    if not name:
-        raise ValueError("get_group requires 'group_id' or 'name'")
-
-    groups, _, err = await client.list_groups(q=name)
-    if err:
-        raise RuntimeError(f"Okta API error searching for group '{name}': {err}")
-    if not groups:
-        raise RuntimeError(f"No group found matching '{name}'")
-    return groups[0]
-
-
-# ---------------------------------------------------------------------------
-# Additional User action handlers
-# ---------------------------------------------------------------------------
-
-async def _action_create_user(params: dict, client) -> Any:
-    """Create a new user with the given profile."""
-    from okta.models.create_user_request import CreateUserRequest
-
-    profile = params.get("profile")
-
-    # If profile is not a dict, assemble it from individual top-level fields
-    if not isinstance(profile, dict):
-        profile_fields = ("firstName", "lastName", "email", "login")
-        assembled = {k: params[k] for k in profile_fields if k in params}
-        if assembled:
-            profile = assembled
-        elif isinstance(profile, str) and "@" in profile:
-            # Derive a minimal profile from an email-like identifier
-            local_part = profile.split("@")[0]
-            parts = local_part.split(".")
-            profile = {
-                "login": profile,
-                "email": profile,
-                "firstName": parts[0].capitalize() if parts else local_part.capitalize(),
-                "lastName": parts[1].capitalize() if len(parts) > 1 else "",
-            }
-        elif not profile:
-            raise ValueError("create_user requires 'profile'")
-
-    user_data = CreateUserRequest.from_dict({"profile": profile})
-    user, _, err = await client.create_user(user_data)
-    if err:
-        raise RuntimeError(f"Okta API error creating user: {err}")
-    return user
-
-
-async def _action_update_user(params: dict, client) -> Any:
-    """Update an existing user's profile."""
-    from okta.models.update_user_request import UpdateUserRequest
-
-    user_id = params.get("user_id")
-    profile = params.get("profile")
-    if not user_id:
-        raise ValueError("update_user requires 'user_id'")
-    if not profile:
-        raise ValueError("update_user requires 'profile'")
-
-    user_data = UpdateUserRequest.from_dict({"profile": profile})
-    user, _, err = await client.update_user(user_id, user_data)
-    if err:
-        raise RuntimeError(f"Okta API error updating user {user_id}: {err}")
-    return user
-
-
-async def _action_delete_deactivated_user(params: dict, client) -> str:
-    """Permanently delete a deactivated user."""
-    user_id = params.get("user_id")
-    if not user_id:
-        raise ValueError("delete_deactivated_user requires 'user_id'")
-
-    result = await client.delete_user(user_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deleting user {user_id}: {err}")
-    return f"User {user_id} deleted successfully"
-
-
-async def _action_get_user_profile_attributes(params: dict, client) -> dict:
-    """List all user profile attributes supported by the Okta org."""
-    users, _, err = await client.list_users(limit=1)
-    if err:
-        raise RuntimeError(f"Okta API error fetching profile attributes: {err}")
-    if users and len(users) > 0:
-        return vars(users[0].profile)
-    return {}
-
-
-# ---------------------------------------------------------------------------
-# Additional Group action handlers
-# ---------------------------------------------------------------------------
-
-async def _action_list_groups(params: dict, client) -> list:
-    """Search/list groups. Accepts 'search', 'filter', 'q', 'limit'."""
-    query = {}
-    if params.get("search"):
-        query["search"] = params["search"]
-    if params.get("filter"):
-        query["filter"] = params["filter"]
-    if params.get("q"):
-        query["q"] = params["q"]
-    if params.get("limit"):
-        query["limit"] = int(params["limit"])
-
-    groups, resp, err = await client.list_groups(**query)
-    if err:
-        raise RuntimeError(f"Okta API error listing groups: {err}")
-    return await _auto_paginate(groups, resp)
-
-
-async def _action_create_group(params: dict, client) -> Any:
-    """Create a new group with the given profile."""
-    profile = params.get("profile")
-    if not profile:
-        raise ValueError("create_group requires 'profile'")
-
-    group, _, err = await client.add_group({"profile": profile})
-    if err:
-        raise RuntimeError(f"Okta API error creating group: {err}")
-    return group
-
-
-async def _action_update_group(params: dict, client) -> Any:
-    """Update a group by ID with a new profile."""
-    group_id = params.get("group_id")
-    profile = params.get("profile")
-    if not group_id:
-        raise ValueError("update_group requires 'group_id'")
-    if not profile:
-        raise ValueError("update_group requires 'profile'")
-
-    group, _, err = await client.replace_group(group_id, {"profile": profile})
-    if err:
-        raise RuntimeError(f"Okta API error updating group {group_id}: {err}")
-    return group
-
-
-async def _action_delete_group(params: dict, client) -> str:
-    """Delete a group by ID."""
-    group_id = params.get("group_id")
-    if not group_id:
-        raise ValueError("delete_group requires 'group_id'")
-
-    result = await client.delete_group(group_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deleting group {group_id}: {err}")
-    return f"Group {group_id} deleted successfully"
-
-
-async def _action_list_group_users(params: dict, client) -> list:
-    """List all users in a group."""
-    group_id = params.get("group_id")
-    if not group_id:
-        raise ValueError("list_group_users requires 'group_id'")
-
-    users, resp, err = await client.list_group_users(group_id)
-    if err:
-        raise RuntimeError(f"Okta API error listing users for group {group_id}: {err}")
-    return await _auto_paginate(users, resp)
-
-
-async def _action_list_group_apps(params: dict, client) -> list:
-    """List all applications assigned to a group."""
-    group_id = params.get("group_id")
-    if not group_id:
-        raise ValueError("list_group_apps requires 'group_id'")
-
-    apps, resp, err = await client.list_assigned_applications_for_group(group_id)
-    if err:
-        raise RuntimeError(f"Okta API error listing apps for group {group_id}: {err}")
-    return await _auto_paginate(apps, resp)
-
-
-# ---------------------------------------------------------------------------
-# Application action handlers
-# ---------------------------------------------------------------------------
-
-async def _action_list_applications(params: dict, client) -> list:
-    """List applications. Accepts 'q', 'filter', 'limit', 'after', 'expand'."""
-    # Bypass SDK pydantic deserialization — some JWK credential models in the SDK
-    # declare fields as required StrictStr but the API can return None for them,
-    # causing validation errors.  Using raw HTTP avoids this SDK bug.
-    method, url, header_params, body, _post_params = (
-        client._list_applications_serialize(
-            q=params.get("q"),
-            after=params.get("after"),
-            use_optimization=None,
-            always_include_vpn_settings=None,
-            limit=int(params["limit"]) if params.get("limit") else None,
-            filter=params.get("filter"),
-            expand=params.get("expand"),
-            include_non_deleted=None,
-            _request_auth=None,
-            _content_type=None,
-            _headers=None,
-            _host_index=0,
-        )
-    )
-    request, err = await client._request_executor.create_request(
-        method, url, body, header_params, {}, keep_empty_params=False
-    )
-    if err:
-        raise RuntimeError(f"Failed to create list_applications request: {err}")
-    response, response_body, err = await client._request_executor.execute(request)
-    if err:
-        raise RuntimeError(f"Okta API error listing applications: {err}")
-    if not response_body:
-        return []
-    apps = json.loads(response_body) if isinstance(response_body, str) else response_body
-    return apps if isinstance(apps, list) else []
-
-
-async def _action_get_application(params: dict, client) -> Any:
-    """Get an application by ID."""
-    app_id = params.get("app_id")
-    if not app_id:
-        raise ValueError("get_application requires 'app_id'")
-
-    query = {}
-    if params.get("expand"):
-        query["expand"] = params["expand"]
-
-    app, _, err = await client.get_application(app_id, **query)
-    if err:
-        raise RuntimeError(f"Okta API error getting application {app_id}: {err}")
-    return app
-
-
-async def _action_create_application(params: dict, client) -> Any:
-    """Create a new application."""
-    import okta.models as okta_models
-
-    app_config = params.get("app_config")
-    if not app_config:
-        raise ValueError("create_application requires 'app_config'")
-
-    activate = params.get("activate", True)
-    sign_on_mode = app_config.get("signOnMode") or app_config.get("sign_on_mode", "")
-    mode_map = {
-        "BOOKMARK": okta_models.BookmarkApplication,
-        "AUTO_LOGIN": okta_models.AutoLoginApplication,
-        "BASIC_AUTH": okta_models.BasicAuthApplication,
-        "BROWSER_PLUGIN": okta_models.BrowserPluginApplication,
-        "OPENID_CONNECT": okta_models.OpenIdConnectApplication,
-        "SAML_1_1": okta_models.Saml11Application,
-        "SAML_2_0": okta_models.SamlApplication,
-        "SECURE_PASSWORD_STORE": okta_models.SecurePasswordStoreApplication,
-        "WS_FEDERATION": okta_models.WsFederationApplication,
-    }
-    model_cls = mode_map.get(str(sign_on_mode).upper(), okta_models.Application)
-    app_model = model_cls(**app_config)
-
-    app, _, err = await client.create_application(app_model, activate)
-    if err:
-        raise RuntimeError(f"Okta API error creating application: {err}")
-    return app
-
-
-async def _action_update_application(params: dict, client) -> Any:
-    """Update an application by ID."""
-    import okta.models as okta_models
-
-    app_id = params.get("app_id")
-    app_config = params.get("app_config")
-    if not app_id:
-        raise ValueError("update_application requires 'app_id'")
-    if not app_config:
-        raise ValueError("update_application requires 'app_config'")
-
-    sign_on_mode = app_config.get("signOnMode") or app_config.get("sign_on_mode", "")
-    mode_map = {
-        "BOOKMARK": okta_models.BookmarkApplication,
-        "AUTO_LOGIN": okta_models.AutoLoginApplication,
-        "BASIC_AUTH": okta_models.BasicAuthApplication,
-        "BROWSER_PLUGIN": okta_models.BrowserPluginApplication,
-        "OPENID_CONNECT": okta_models.OpenIdConnectApplication,
-        "SAML_1_1": okta_models.Saml11Application,
-        "SAML_2_0": okta_models.SamlApplication,
-        "SECURE_PASSWORD_STORE": okta_models.SecurePasswordStoreApplication,
-        "WS_FEDERATION": okta_models.WsFederationApplication,
-    }
-    model_cls = mode_map.get(str(sign_on_mode).upper(), okta_models.Application)
-    app_model = model_cls(**app_config)
-
-    app, _, err = await client.replace_application(app_id, app_model)
-    if err:
-        raise RuntimeError(f"Okta API error updating application {app_id}: {err}")
-    return app
-
-
-async def _action_delete_application(params: dict, client) -> str:
-    """Delete an application by ID."""
-    app_id = params.get("app_id")
-    if not app_id:
-        raise ValueError("delete_application requires 'app_id'")
-
-    result = await client.delete_application(app_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deleting application {app_id}: {err}")
-    return f"Application {app_id} deleted successfully"
-
-
-async def _action_activate_application(params: dict, client) -> str:
-    """Activate an application."""
-    app_id = params.get("app_id")
-    if not app_id:
-        raise ValueError("activate_application requires 'app_id'")
-
-    result = await client.activate_application(app_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error activating application {app_id}: {err}")
-    return f"Application {app_id} activated successfully"
-
-
-async def _action_deactivate_application(params: dict, client) -> str:
-    """Deactivate an application."""
-    app_id = params.get("app_id")
-    if not app_id:
-        raise ValueError("deactivate_application requires 'app_id'")
-
-    result = await client.deactivate_application(app_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deactivating application {app_id}: {err}")
-    return f"Application {app_id} deactivated successfully"
-
-
-# ---------------------------------------------------------------------------
-# Policy action handlers
-# ---------------------------------------------------------------------------
-
-async def _action_list_policies(params: dict, client) -> list:
-    """List policies by type."""
-    policy_type = params.get("type")
-    if not policy_type:
-        raise ValueError("list_policies requires 'type'")
-
-    # Bypass SDK pydantic deserialization — AccessPolicy model expects
-    # _embedded.resourceType as a dict but the API returns a string ('APP'),
-    # causing validation errors.  Using raw HTTP avoids this SDK bug.
-    method, url, header_params, body, _post_params = (
-        client._list_policies_serialize(
-            type=policy_type,
-            status=params.get("status"),
-            q=params.get("q"),
-            after=params.get("after"),
-            limit=params.get("limit"),
-            expand=None,
-            sort_by=None,
-            resource_id=None,
-            _request_auth=None,
-            _content_type=None,
-            _headers=None,
-            _host_index=0,
-        )
-    )
-    request, err = await client._request_executor.create_request(
-        method, url, body, header_params, {}, keep_empty_params=False
-    )
-    if err:
-        raise RuntimeError(f"Failed to create list_policies request: {err}")
-    response, response_body, err = await client._request_executor.execute(request)
-    if err:
-        raise RuntimeError(f"Okta API error listing policies: {err}")
-    if not response_body:
-        return []
-    policies = json.loads(response_body) if isinstance(response_body, str) else response_body
-    return policies if isinstance(policies, list) else []
-
-
-async def _action_get_policy(params: dict, client) -> Any:
-    """Retrieve a specific policy by ID."""
-    policy_id = params.get("policy_id")
-    if not policy_id:
-        raise ValueError("get_policy requires 'policy_id'")
-
-    policy, _, err = await client.get_policy(policy_id)
-    if err:
-        raise RuntimeError(f"Okta API error getting policy {policy_id}: {err}")
-    return policy
-
-
-async def _action_create_policy(params: dict, client) -> Any:
-    """Create a new policy."""
-    policy_data = params.get("policy_data")
-    if not policy_data:
-        raise ValueError("create_policy requires 'policy_data'")
-
-    policy, _, err = await client.create_policy(policy_data)
-    if err:
-        raise RuntimeError(f"Okta API error creating policy: {err}")
-    return policy
-
-
-async def _action_update_policy(params: dict, client) -> Any:
-    """Update an existing policy."""
-    policy_id = params.get("policy_id")
-    policy_data = params.get("policy_data")
-    if not policy_id:
-        raise ValueError("update_policy requires 'policy_id'")
-    if not policy_data:
-        raise ValueError("update_policy requires 'policy_data'")
-
-    policy, _, err = await client.replace_policy(policy_id, policy_data)
-    if err:
-        raise RuntimeError(f"Okta API error updating policy {policy_id}: {err}")
-    return policy
-
-
-async def _action_delete_policy(params: dict, client) -> str:
-    """Delete a policy."""
-    policy_id = params.get("policy_id")
-    if not policy_id:
-        raise ValueError("delete_policy requires 'policy_id'")
-
-    result = await client.delete_policy(policy_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deleting policy {policy_id}: {err}")
-    return f"Policy {policy_id} deleted successfully"
-
-
-async def _action_activate_policy(params: dict, client) -> str:
-    """Activate a policy."""
-    policy_id = params.get("policy_id")
-    if not policy_id:
-        raise ValueError("activate_policy requires 'policy_id'")
-
-    result = await client.activate_policy(policy_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error activating policy {policy_id}: {err}")
-    return f"Policy {policy_id} activated successfully"
-
-
-async def _action_deactivate_policy(params: dict, client) -> str:
-    """Deactivate a policy."""
-    policy_id = params.get("policy_id")
-    if not policy_id:
-        raise ValueError("deactivate_policy requires 'policy_id'")
-
-    result = await client.deactivate_policy(policy_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deactivating policy {policy_id}: {err}")
-    return f"Policy {policy_id} deactivated successfully"
-
-
-# ---------------------------------------------------------------------------
-# Policy Rule action handlers
-# ---------------------------------------------------------------------------
-
-async def _action_list_policy_rules(params: dict, client) -> list:
-    """List all rules for a policy."""
-    policy_id = params.get("policy_id")
-    if not policy_id:
-        raise ValueError("list_policy_rules requires 'policy_id'")
-
-    rules, resp, err = await client.list_policy_rules(policy_id)
-    if err:
-        raise RuntimeError(f"Okta API error listing rules for policy {policy_id}: {err}")
-    return await _auto_paginate(rules, resp)
-
-
-async def _action_get_policy_rule(params: dict, client) -> Any:
-    """Get a specific policy rule."""
-    policy_id = params.get("policy_id")
-    rule_id = params.get("rule_id")
-    if not policy_id:
-        raise ValueError("get_policy_rule requires 'policy_id'")
-    if not rule_id:
-        raise ValueError("get_policy_rule requires 'rule_id'")
-
-    rule, _, err = await client.get_policy_rule(policy_id, rule_id)
-    if err:
-        raise RuntimeError(f"Okta API error getting rule {rule_id}: {err}")
-    return rule
-
-
-async def _action_create_policy_rule(params: dict, client) -> Any:
-    """Create a new rule for a policy."""
-    from okta.models.policy_rule import PolicyRule
-
-    policy_id = params.get("policy_id")
-    rule_data = params.get("rule_data")
-    if not policy_id:
-        raise ValueError("create_policy_rule requires 'policy_id'")
-    if not rule_data:
-        raise ValueError("create_policy_rule requires 'rule_data'")
-
-    policy_rule = PolicyRule.from_dict(rule_data)
-    rule, _, err = await client.create_policy_rule(policy_id, policy_rule)
-    if err:
-        raise RuntimeError(f"Okta API error creating rule for policy {policy_id}: {err}")
-    return rule
-
-
-async def _action_update_policy_rule(params: dict, client) -> Any:
-    """Update an existing policy rule."""
-    from okta.models.policy_rule import PolicyRule
-
-    policy_id = params.get("policy_id")
-    rule_id = params.get("rule_id")
-    rule_data = params.get("rule_data")
-    if not policy_id:
-        raise ValueError("update_policy_rule requires 'policy_id'")
-    if not rule_id:
-        raise ValueError("update_policy_rule requires 'rule_id'")
-    if not rule_data:
-        raise ValueError("update_policy_rule requires 'rule_data'")
-
-    policy_rule = PolicyRule.from_dict(rule_data)
-    rule, _, err = await client.replace_policy_rule(policy_id, rule_id, policy_rule)
-    if err:
-        raise RuntimeError(f"Okta API error updating rule {rule_id}: {err}")
-    return rule
-
-
-async def _action_delete_policy_rule(params: dict, client) -> str:
-    """Delete a policy rule."""
-    policy_id = params.get("policy_id")
-    rule_id = params.get("rule_id")
-    if not policy_id:
-        raise ValueError("delete_policy_rule requires 'policy_id'")
-    if not rule_id:
-        raise ValueError("delete_policy_rule requires 'rule_id'")
-
-    result = await client.delete_policy_rule(policy_id, rule_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deleting rule {rule_id}: {err}")
-    return f"Rule {rule_id} deleted successfully"
-
-
-async def _action_activate_policy_rule(params: dict, client) -> str:
-    """Activate a policy rule."""
-    policy_id = params.get("policy_id")
-    rule_id = params.get("rule_id")
-    if not policy_id:
-        raise ValueError("activate_policy_rule requires 'policy_id'")
-    if not rule_id:
-        raise ValueError("activate_policy_rule requires 'rule_id'")
-
-    result = await client.activate_policy_rule(policy_id, rule_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error activating rule {rule_id}: {err}")
-    return f"Rule {rule_id} activated successfully"
-
-
-async def _action_deactivate_policy_rule(params: dict, client) -> str:
-    """Deactivate a policy rule."""
-    policy_id = params.get("policy_id")
-    rule_id = params.get("rule_id")
-    if not policy_id:
-        raise ValueError("deactivate_policy_rule requires 'policy_id'")
-    if not rule_id:
-        raise ValueError("deactivate_policy_rule requires 'rule_id'")
-
-    result = await client.deactivate_policy_rule(policy_id, rule_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deactivating rule {rule_id}: {err}")
-    return f"Rule {rule_id} deactivated successfully"
-
-
-# ---------------------------------------------------------------------------
-# Device Assurance action handlers
-# ---------------------------------------------------------------------------
-
-async def _action_list_device_assurance_policies(params: dict, client) -> list:
-    """List all device assurance policies."""
-    policies, resp, err = await client.list_device_assurance_policies()
-    if err:
-        raise RuntimeError(f"Okta API error listing device assurance policies: {err}")
-    return await _auto_paginate(policies, resp)
-
-
-async def _action_get_device_assurance_policy(params: dict, client) -> Any:
-    """Get a device assurance policy by ID."""
-    device_assurance_id = params.get("device_assurance_id")
-    if not device_assurance_id:
-        raise ValueError("get_device_assurance_policy requires 'device_assurance_id'")
-
-    policy, _, err = await client.get_device_assurance_policy(device_assurance_id)
-    if err:
-        raise RuntimeError(f"Okta API error getting device assurance policy {device_assurance_id}: {err}")
-    return policy
-
-
-async def _action_create_device_assurance_policy(params: dict, client) -> Any:
-    """Create a new device assurance policy."""
-    from okta.models.device_assurance import DeviceAssurance
-
-    policy_data = params.get("policy_data")
-    if not policy_data:
-        raise ValueError("create_device_assurance_policy requires 'policy_data'")
-
-    policy_model = DeviceAssurance.from_dict(policy_data)
-    policy, _, err = await client.create_device_assurance_policy(policy_model)
-    if err:
-        raise RuntimeError(f"Okta API error creating device assurance policy: {err}")
-    return policy
-
-
-async def _action_replace_device_assurance_policy(params: dict, client) -> Any:
-    """Replace an existing device assurance policy."""
-    from okta.models.device_assurance import DeviceAssurance
-
-    device_assurance_id = params.get("device_assurance_id")
-    policy_data = params.get("policy_data")
-    if not device_assurance_id:
-        raise ValueError("replace_device_assurance_policy requires 'device_assurance_id'")
-    if not policy_data:
-        raise ValueError("replace_device_assurance_policy requires 'policy_data'")
-
-    policy_model = DeviceAssurance.from_dict(policy_data)
-    policy, _, err = await client.replace_device_assurance_policy(device_assurance_id, policy_model)
-    if err:
-        raise RuntimeError(f"Okta API error replacing device assurance policy {device_assurance_id}: {err}")
-    return policy
-
-
-async def _action_delete_device_assurance_policy(params: dict, client) -> str:
-    """Delete a device assurance policy."""
-    device_assurance_id = params.get("device_assurance_id")
-    if not device_assurance_id:
-        raise ValueError("delete_device_assurance_policy requires 'device_assurance_id'")
-
-    result = await client.delete_device_assurance_policy(device_assurance_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deleting device assurance policy {device_assurance_id}: {err}")
-    return f"Device assurance policy {device_assurance_id} deleted successfully"
-
-
-# ---------------------------------------------------------------------------
-# System Logs action handler
-# ---------------------------------------------------------------------------
-
-async def _action_get_logs(params: dict, client) -> list:
-    """Retrieve system logs. Accepts 'since', 'until', 'filter', 'q', 'limit'."""
-    query = {}
-    for key in ("since", "until", "filter", "q", "after"):
-        if params.get(key):
-            query[key] = params[key]
-    if params.get("limit"):
-        query["limit"] = int(params["limit"])
-
-    logs, resp, err = await client.list_log_events(**query)
-    if err:
-        raise RuntimeError(f"Okta API error retrieving system logs: {err}")
-    return await _auto_paginate(logs, resp)
-
-
-# ---------------------------------------------------------------------------
-# Brand action handlers
-# ---------------------------------------------------------------------------
-
-async def _action_list_brands(params: dict, client) -> Any:
-    """List brands. When a name query is given and matches exactly one brand,
-    returns that brand object directly so downstream steps can reference its ID.
-    """
-    query = {}
-    name = params.get("name") or params.get("q")
-    if name:
-        query["q"] = name
-    if params.get("limit"):
-        query["limit"] = int(params["limit"])
-
-    brands, resp, err = await client.list_brands(**query)
-    if err:
-        raise RuntimeError(f"Okta API error listing brands: {err}")
-
-    # Auto-paginate: try v2 SDK (has_next) first, then fall back to Link header cursor
-    if resp and hasattr(resp, "has_next") and resp.has_next():
-        brands = await _auto_paginate(brands, resp)
-    else:
-        all_brands = list(brands) if brands else []
-        cursor = extract_after_cursor(resp)
-        page = 1
-        while cursor and page < 50:
-            page_query = dict(query)
-            page_query["after"] = cursor
-            next_brands, next_resp, next_err = await client.list_brands(**page_query)
-            if next_err or not next_brands:
-                break
-            all_brands.extend(next_brands)
-            cursor = extract_after_cursor(next_resp)
-            page += 1
-        brands = all_brands
-
-    if name:
-        # Prefer exact case-insensitive name match
-        # Support both SDK model objects (getattr) and dicts (.get)
-        def _brand_name(b) -> str:
-            n = getattr(b, "name", None)
-            if n is None and isinstance(b, dict):
-                n = b.get("name")
-            if n is None and hasattr(b, "model_dump"):
-                n = b.model_dump(by_alias=True).get("name")
-            return (n or "").lower()
-
-        exact = [b for b in brands if _brand_name(b) == name.lower()]
-        if exact:
-            return exact[0]
-        if len(brands) == 1:
-            return brands[0]
-
-    return brands
-
-
-async def _action_get_brand(params: dict, client) -> Any:
-    """Get a brand by ID."""
-    brand_id = params.get("brand_id")
-    if not brand_id:
-        raise ValueError("get_brand requires 'brand_id'")
-
-    brand, _, err = await client.get_brand(brand_id)
-    if err:
-        raise RuntimeError(f"Okta API error getting brand {brand_id}: {err}")
-    return brand
-
-
-async def _action_create_brand(params: dict, client) -> Any:
-    """Create a new brand with the given name."""
-    from okta.models.create_brand_request import CreateBrandRequest
-
-    name = params.get("name")
-    if not name:
-        raise ValueError("create_brand requires 'name'")
-
-    create_request = CreateBrandRequest(name=name)
-    brand, _, err = await client.create_brand(create_request)
-    if err:
-        raise RuntimeError(f"Okta API error creating brand '{name}': {err}")
-    return brand
-
-
-async def _action_replace_brand(params: dict, client) -> Any:
-    """Replace (update) a brand by ID."""
-    from okta.models.brand_request import BrandRequest
-
-    brand_id = params.get("brand_id")
-    if not brand_id:
-        raise ValueError("replace_brand requires 'brand_id'")
-
-    brand_data = params.get("brand_data") or {}
-    name = brand_data.get("name") or params.get("name")
-    if not name:
-        raise ValueError("replace_brand requires 'name'")
-
-    brand_request = BrandRequest(name=name)
-    brand, _, err = await client.replace_brand(brand_id, brand_request)
-    if err:
-        raise RuntimeError(f"Okta API error replacing brand {brand_id}: {err}")
-    return brand
-
-
-async def _action_delete_brand(params: dict, client) -> str:
-    """Delete a brand by ID."""
-    brand_id = params.get("brand_id")
-    if not brand_id:
-        raise ValueError("delete_brand requires 'brand_id'")
-
-    result = await client.delete_brand(brand_id)
-    err = result[-1]
-    if err:
-        raise RuntimeError(f"Okta API error deleting brand {brand_id}: {err}")
-    return f"Brand {brand_id} deleted successfully"
-
-
-async def _action_list_brand_domains(params: dict, client) -> list:
-    """List all custom domains associated with a brand."""
-    brand_id = params.get("brand_id")
-    if not brand_id:
-        raise ValueError("list_brand_domains requires 'brand_id'")
-
-    domains, resp, err = await client.list_brand_domains(brand_id)
-    if err:
-        raise RuntimeError(f"Okta API error listing domains for brand {brand_id}: {err}")
-    return await _auto_paginate(domains, resp)
-
-
-# ---------------------------------------------------------------------------
-# Theme action handlers
-# ---------------------------------------------------------------------------
-
-async def _action_list_brand_themes(params: dict, client) -> Any:
-    """List themes for a brand. Since each brand has exactly one theme,
-    returns the single theme object directly so its ID can be referenced.
-    """
-    brand_id = params.get("brand_id")
-    if not brand_id:
-        raise ValueError("list_brand_themes requires 'brand_id'")
-
-    themes, resp, err = await client.list_brand_themes(brand_id)
-    if err:
-        raise RuntimeError(f"Okta API error listing themes for brand {brand_id}: {err}")
-    themes = await _auto_paginate(themes, resp)
-
-    # Each org has exactly one theme per brand — return it directly
-    if len(themes) == 1:
-        return themes[0]
-    return themes
-
-
-async def _action_get_brand_theme(params: dict, client) -> Any:
-    """Get a specific theme by brand ID and theme ID."""
-    brand_id = params.get("brand_id")
-    theme_id = params.get("theme_id")
-    if not brand_id:
-        raise ValueError("get_brand_theme requires 'brand_id'")
-    if not theme_id:
-        raise ValueError("get_brand_theme requires 'theme_id'")
-
-    theme, _, err = await client.get_brand_theme(brand_id, theme_id)
-    if err:
-        raise RuntimeError(f"Okta API error getting theme {theme_id} for brand {brand_id}: {err}")
-    return theme
-
-
-async def _action_replace_brand_theme(params: dict, client) -> Any:
-    """Replace a theme's colours and touchpoint variants.
-
-    Accepts a 'theme_data' dict and/or individual colour/variant fields.
-    Missing required fields are auto-filled from the current theme so that
-    callers only need to specify the fields they want to change.
-    """
-    from okta.models.update_theme_request import UpdateThemeRequest
-    from okta.models.sign_in_page_touch_point_variant import SignInPageTouchPointVariant
-    from okta.models.end_user_dashboard_touch_point_variant import EndUserDashboardTouchPointVariant
-    from okta.models.error_page_touch_point_variant import ErrorPageTouchPointVariant
-    from okta.models.email_template_touch_point_variant import EmailTemplateTouchPointVariant
-    from okta.models.loading_page_touch_point_variant import LoadingPageTouchPointVariant
-
-    brand_id = params.get("brand_id")
-    theme_id = params.get("theme_id")
-    if not brand_id:
-        raise ValueError("replace_brand_theme requires 'brand_id'")
-    if not theme_id:
-        raise ValueError("replace_brand_theme requires 'theme_id'")
-
-    # Merge theme_data dict with individual top-level params
-    merged: dict = dict(params.get("theme_data") or {})
-    for key in (
-        "primaryColorHex", "primary_color_hex",
-        "secondaryColorHex", "secondary_color_hex",
-        "primaryColorContrastHex", "primary_color_contrast_hex",
-        "secondaryColorContrastHex", "secondary_color_contrast_hex",
-        "signInPageTouchPointVariant", "sign_in_page_touch_point_variant",
-        "endUserDashboardTouchPointVariant", "end_user_dashboard_touch_point_variant",
-        "errorPageTouchPointVariant", "error_page_touch_point_variant",
-        "emailTemplateTouchPointVariant", "email_template_touch_point_variant",
-        "loadingPageTouchPointVariant", "loading_page_touch_point_variant",
-    ):
-        if params.get(key) is not None:
-            merged[key] = params[key]
-
-    def _get(*keys):
-        for k in keys:
-            v = merged.get(k)
-            if v is not None:
-                return v
-        return None
-
-    primary = _get("primary_color_hex", "primaryColorHex")
-    secondary = _get("secondary_color_hex", "secondaryColorHex")
-    sign_in = _get("sign_in_page_touch_point_variant", "signInPageTouchPointVariant")
-    dashboard = _get("end_user_dashboard_touch_point_variant", "endUserDashboardTouchPointVariant")
-    error_page = _get("error_page_touch_point_variant", "errorPageTouchPointVariant")
-    email = _get("email_template_touch_point_variant", "emailTemplateTouchPointVariant")
-    loading = _get("loading_page_touch_point_variant", "loadingPageTouchPointVariant")
-    primary_contrast = _get("primary_color_contrast_hex", "primaryColorContrastHex")
-    secondary_contrast = _get("secondary_color_contrast_hex", "secondaryColorContrastHex")
-
-    # Fetch current theme to fill in any missing required fields
-    needs_current = not all([primary, secondary, sign_in, dashboard, error_page, email])
-    current_theme = None
-    if needs_current:
-        current_theme, _, err = await client.get_brand_theme(brand_id, theme_id)
-        if err:
-            raise RuntimeError(f"Okta API error fetching current theme {theme_id}: {err}")
-
-    def _from_current(camel_attr, snake_attr, default=None):
-        if current_theme:
-            val = getattr(current_theme, camel_attr, None) or getattr(current_theme, snake_attr, None)
-            if val is not None:
-                return val.value if hasattr(val, "value") else val
-        return default
-
-    if not primary:
-        primary = _from_current("primaryColorHex", "primary_color_hex", "#1662dd")
-    if not secondary:
-        secondary = _from_current("secondaryColorHex", "secondary_color_hex", "#ebebed")
-    if not sign_in:
-        sign_in = _from_current("signInPageTouchPointVariant", "sign_in_page_touch_point_variant", "OKTA_DEFAULT")
-    if not dashboard:
-        dashboard = _from_current("endUserDashboardTouchPointVariant", "end_user_dashboard_touch_point_variant", "OKTA_DEFAULT")
-    if not error_page:
-        error_page = _from_current("errorPageTouchPointVariant", "error_page_touch_point_variant", "OKTA_DEFAULT")
-    if not email:
-        email = _from_current("emailTemplateTouchPointVariant", "email_template_touch_point_variant", "OKTA_DEFAULT")
-
-    request_data = {
-        "primary_color_hex": primary,
-        "secondary_color_hex": secondary,
-        "sign_in_page_touch_point_variant": SignInPageTouchPointVariant(str(sign_in).upper()),
-        "end_user_dashboard_touch_point_variant": EndUserDashboardTouchPointVariant(str(dashboard).upper()),
-        "error_page_touch_point_variant": ErrorPageTouchPointVariant(str(error_page).upper()),
-        "email_template_touch_point_variant": EmailTemplateTouchPointVariant(str(email).upper()),
-    }
-    if primary_contrast:
-        request_data["primary_color_contrast_hex"] = primary_contrast
-    if secondary_contrast:
-        request_data["secondary_color_contrast_hex"] = secondary_contrast
-    if loading:
-        request_data["loading_page_touch_point_variant"] = LoadingPageTouchPointVariant(str(loading).upper())
-
-    theme_request = UpdateThemeRequest(**request_data)
-    theme, _, err = await client.replace_brand_theme(brand_id, theme_id, theme_request)
-    if err:
-        raise RuntimeError(f"Okta API error replacing theme {theme_id}: {err}")
-    return theme
+    ctx = _make_engine_ctx(manager, client)
+
+    # Build kwargs from params, matching the function's signature.
+    sig = inspect.signature(handler)
+    kwargs: dict[str, Any] = {}
+    for name, param in sig.parameters.items():
+        if name == "ctx":
+            kwargs["ctx"] = ctx
+        elif name in params:
+            kwargs[name] = params[name]
+        # skip params not present — let the function use its defaults
+
+    result = await handler(**kwargs)
+
+    # -- Normalise the result for engine consumption -------------------------
+    # MCP tool functions return wrapped formats (e.g. [user], {"items": [...]},
+    # ["Error: ..."]) whereas the engine expects raw objects / lists and uses
+    # exceptions for errors.
+
+    if isinstance(result, list) and len(result) == 1:
+        item = result[0]
+        if isinstance(item, str) and item.startswith(("Error:", "Exception:")):
+            raise RuntimeError(item)
+        if isinstance(item, dict) and "error" in item:
+            raise RuntimeError(item["error"])
+        # Unwrap single-item lists (e.g. [user] → user)
+        result = item
+    elif isinstance(result, dict):
+        if "error" in result:
+            raise RuntimeError(result["error"])
+        if "items" in result:
+            result = result["items"]
+
+    return result
 
 
 # ---------------------------------------------------------------------------

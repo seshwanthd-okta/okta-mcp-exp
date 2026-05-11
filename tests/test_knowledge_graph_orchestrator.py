@@ -265,7 +265,9 @@ class TestQueryCallable:
         actions = [t["action"] for t in tools]
         # Tools with no required params should be callable
         assert "list_users" in actions
-        assert "get_group" in actions
+        assert "list_groups" in actions
+        # get_group requires group_id, so it should NOT be callable with no params
+        assert "get_group" not in actions
 
     def test_with_both_params(self, kg):
         tools = kg.query_callable_tools(["user_id", "group_id"])
@@ -396,6 +398,38 @@ class TestBuildExecutionChain:
         steps = kg.build_execution_chain(["get_user", "deactivate_user"])
         assert steps[0]["is_destructive"] is False
         assert steps[1]["is_destructive"] is True
+
+    def test_filter_template_wiring_group_logs(self, kg):
+        """get_group → get_logs should auto-wire filter from group.id."""
+        steps = kg.build_execution_chain(["get_group", "get_logs"])
+        assert len(steps) == 2
+        assert steps[1]["action"] == "get_logs"
+        # Filter should be wired with inline $step reference
+        assert "filter" in steps[1]["params"]
+        assert '$step1.id' in steps[1]["params"]["filter"]
+        assert 'target.id eq' in steps[1]["params"]["filter"]
+
+    def test_filter_template_wiring_user_logs(self, kg):
+        """get_user → get_logs should auto-wire filter from user.id."""
+        steps = kg.build_execution_chain(["get_user", "get_logs"])
+        assert len(steps) == 2
+        assert "filter" in steps[1]["params"]
+        assert '$step1.id' in steps[1]["params"]["filter"]
+        assert 'actor.id eq' in steps[1]["params"]["filter"]
+
+    def test_filter_template_wiring_group_list_users(self, kg):
+        """get_group → list_users should auto-wire filter for memberOf."""
+        steps = kg.build_execution_chain(["get_group", "list_users"])
+        assert len(steps) == 2
+        assert "filter" in steps[1]["params"]
+        assert '$step1.id' in steps[1]["params"]["filter"]
+        assert 'memberOf.id eq' in steps[1]["params"]["filter"]
+
+    def test_no_filter_template_when_no_upstream(self, kg):
+        """get_logs alone should NOT have a filter param auto-wired."""
+        steps = kg.build_execution_chain(["get_logs"])
+        assert len(steps) == 1
+        assert "filter" not in steps[0]["params"]
 
 
 # ===========================================================================
@@ -763,3 +797,86 @@ class TestEndToEnd:
         )
         assert result["plan"]["total_steps"] == 2
         assert result["wiring"][1]["params"]["user_id"] == "$step1.id"
+
+
+# ===========================================================================
+# 7. Inline variable interpolation in _resolve_value
+# ===========================================================================
+
+class TestInlineInterpolation:
+    """Tests for the engine's inline $stepN.field string interpolation."""
+
+    def test_inline_interpolation_in_filter_string(self):
+        from okta_mcp_server.tools.orchestrator.engine import Plan, Step, _resolve_value
+
+        plan = Plan(
+            plan_id="test_plan",
+            workflow_name="test",
+            description="test",
+            steps=[],
+        )
+        # Simulate step 1 having returned an object with id
+        plan.results[1] = MagicMock(id="00g123abc")
+
+        # Inline interpolation: filter template with $step1.id embedded in string
+        value = 'target.id eq "$step1.id"'
+        resolved = _resolve_value(value, plan)
+        assert resolved == 'target.id eq "00g123abc"'
+
+    def test_inline_interpolation_multiple_refs(self):
+        from okta_mcp_server.tools.orchestrator.engine import Plan, _resolve_value
+
+        plan = Plan(
+            plan_id="test_plan",
+            workflow_name="test",
+            description="test",
+            steps=[],
+        )
+        plan.results[1] = MagicMock(id="00u111")
+        plan.results[2] = MagicMock(id="00g222")
+
+        value = 'actor.id eq "$step1.id" and target.id eq "$step2.id"'
+        resolved = _resolve_value(value, plan)
+        assert resolved == 'actor.id eq "00u111" and target.id eq "00g222"'
+
+    def test_exact_match_still_returns_raw_object(self):
+        from okta_mcp_server.tools.orchestrator.engine import Plan, _resolve_value
+
+        plan = Plan(
+            plan_id="test_plan",
+            workflow_name="test",
+            description="test",
+            steps=[],
+        )
+        user_obj = MagicMock(id="00u123", profile=MagicMock(email="a@b.com"))
+        plan.results[1] = user_obj
+
+        # Exact match should return the raw object, not a string
+        resolved = _resolve_value("$step1.id", plan)
+        assert resolved == "00u123"
+
+    def test_bare_step_reference(self):
+        from okta_mcp_server.tools.orchestrator.engine import Plan, _resolve_value
+
+        plan = Plan(
+            plan_id="test_plan",
+            workflow_name="test",
+            description="test",
+            steps=[],
+        )
+        plan.results[1] = [{"id": "g1"}, {"id": "g2"}]
+
+        resolved = _resolve_value("$step1", plan)
+        assert resolved == [{"id": "g1"}, {"id": "g2"}]
+
+    def test_no_interpolation_for_plain_strings(self):
+        from okta_mcp_server.tools.orchestrator.engine import Plan, _resolve_value
+
+        plan = Plan(
+            plan_id="test_plan",
+            workflow_name="test",
+            description="test",
+            steps=[],
+        )
+        resolved = _resolve_value("hello world", plan)
+        assert resolved == "hello world"

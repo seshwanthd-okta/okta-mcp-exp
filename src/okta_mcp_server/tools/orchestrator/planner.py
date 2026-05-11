@@ -22,13 +22,11 @@ satisfy unsatisfied goal predicates, selects the cheapest action, adds
 that action's preconditions as new sub-goals, and repeats until all
 predicates are satisfied by the initial state.
 
-Goals are registered in a goal registry for convenience.  Users can also
-supply ad-hoc goal states directly for custom workflows.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from loguru import logger
@@ -37,15 +35,6 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class Goal:
-    """A named, reusable goal definition."""
-    name: str
-    description: str
-    required_state: dict[str, str]       # predicates that must hold at the end
-    initial_hints: dict[str, str] = field(default_factory=dict)  # commonly assumed start state
-
 
 @dataclass
 class PlanResult:
@@ -69,204 +58,6 @@ class PlanResult:
             **({"error": self.error} if self.error else {}),
         }
 
-
-# ---------------------------------------------------------------------------
-# Goal Registry — predefined composite goals
-# ---------------------------------------------------------------------------
-
-_GOAL_REGISTRY: dict[str, Goal] = {}
-
-
-def register_goal(goal: Goal) -> None:
-    """Register a reusable goal definition."""
-    _GOAL_REGISTRY[goal.name] = goal
-
-
-def get_goal(name: str) -> Goal | None:
-    return _GOAL_REGISTRY.get(name)
-
-
-def list_goals() -> list[dict]:
-    return [
-        {"name": g.name, "description": g.description, "required_state": g.required_state}
-        for g in _GOAL_REGISTRY.values()
-    ]
-
-
-def reset_goals() -> None:
-    """Reset to built-in goals — used in tests."""
-    _GOAL_REGISTRY.clear()
-    _register_builtin_goals()
-
-
-# ---------------------------------------------------------------------------
-# Built-in goals
-# ---------------------------------------------------------------------------
-
-def _register_builtin_goals() -> None:
-    """Register the standard Okta workflow goals."""
-
-    register_goal(Goal(
-        name="offboard_user",
-        description="Fully offboard a user: audit apps, revoke group memberships, clear sessions, deactivate account",
-        required_state={
-            "user.id": "KNOWN",
-            "user.profile": "KNOWN",
-            "user.apps": "AUDITED",
-            "user.group_memberships": "REVOKED",
-            "user.sessions": "REVOKED",
-            "user.status": "DEACTIVATED",
-        },
-        initial_hints={"user.identifier": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="suspend_user",
-        description="Suspend a user: clear sessions and suspend account",
-        required_state={
-            "user.id": "KNOWN",
-            "user.profile": "KNOWN",
-            "user.sessions": "REVOKED",
-            "user.status": "SUSPENDED",
-        },
-        initial_hints={"user.identifier": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="onboard_user",
-        description="Onboard a new user: create account, add to group, activate",
-        required_state={
-            "user.id": "KNOWN",
-            "user.status": "ACTIVE",
-            "user.group_membership": "GRANTED",
-        },
-        initial_hints={"user.profile_data": "PROVIDED", "group.identifier": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="audit_user",
-        description="Audit a user: retrieve profile, list app assignments, list group memberships, pull system logs",
-        required_state={
-            "user.id": "KNOWN",
-            "user.profile": "KNOWN",
-            "user.apps": "AUDITED",
-            "user.groups": "ENUMERATED",
-            "log.events": "RETRIEVED",
-        },
-        initial_hints={"user.identifier": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="rotate_user_credentials",
-        description="Clear all user sessions (force re-authentication)",
-        required_state={
-            "user.id": "KNOWN",
-            "user.profile": "KNOWN",
-            "user.sessions": "REVOKED",
-        },
-        initial_hints={"user.identifier": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="setup_brand",
-        description="Configure a brand: list brands and set up themes",
-        required_state={
-            "brand.list": "KNOWN",
-            "brand.id": "KNOWN",
-            "brand.profile": "KNOWN",
-            "theme.list": "KNOWN",
-        },
-        initial_hints={"brand.identifier": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="configure_custom_domain",
-        description="Set up a custom domain: create, verify, and configure certificate",
-        required_state={
-            "custom_domain.id": "KNOWN",
-            "custom_domain.status": "VERIFIED",
-            "custom_domain.certificate": "CONFIGURED",
-        },
-        initial_hints={"custom_domain.data": "PROVIDED", "custom_domain.certificate_data": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="configure_email_domain",
-        description="Set up an email domain: create and verify",
-        required_state={
-            "email_domain.id": "KNOWN",
-            "email_domain.status": "VERIFIED",
-        },
-        initial_hints={"email_domain.data": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="setup_device_assurance_policy",
-        description="Create a device assurance policy and list all policies",
-        required_state={
-            "device_assurance.id": "KNOWN",
-            "device_assurance.status": "CREATED",
-            "device_assurance.list": "KNOWN",
-        },
-        initial_hints={"device_assurance.data": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="cleanup_group",
-        description="Look up a group and delete it",
-        required_state={
-            "group.id": "KNOWN",
-            "group.profile": "KNOWN",
-            "group.status": "DELETED",
-        },
-        initial_hints={"group.identifier": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="create_group",
-        description="Create a new group in Okta",
-        required_state={
-            "group.id": "KNOWN",
-            "group.status": "CREATED",
-        },
-        initial_hints={"group.profile_data": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="audit_group",
-        description="Look up a group and list its members and app assignments",
-        required_state={
-            "group.id": "KNOWN",
-            "group.profile": "KNOWN",
-            "group.users": "ENUMERATED",
-            "group.apps": "ENUMERATED",
-        },
-        initial_hints={"group.identifier": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="add_user_to_group",
-        description="Resolve a user and a group, then add the user to the group",
-        required_state={
-            "user.id": "KNOWN",
-            "group.id": "KNOWN",
-            "user.group_membership": "GRANTED",
-        },
-        initial_hints={"user.identifier": "PROVIDED", "group.identifier": "PROVIDED"},
-    ))
-
-    register_goal(Goal(
-        name="list_groups",
-        description="List all groups in the Okta organization",
-        required_state={
-            "group.list": "KNOWN",
-        },
-        initial_hints={},
-    ))
-
-
-# Initialize on module load
-_register_builtin_goals()
 
 
 # ---------------------------------------------------------------------------
@@ -458,8 +249,10 @@ class CSPPlanner:
     ) -> list[str]:
         """Topologically sort actions by their precondition/effect dependencies.
 
-        An action A must come before action B if B has a precondition that
-        A's effects satisfy and that isn't in the initial state.
+        An action A must come before action B if:
+          - B has a precondition that A's effects satisfy, OR
+          - B has a filter_template key that A's effects produce (soft dependency
+            for auto-wiring filters from upstream results).
         """
         if len(actions) <= 1:
             return list(actions)
@@ -470,6 +263,7 @@ class CSPPlanner:
 
         for action_b in actions:
             node_b = self._nodes[action_b]
+            # Hard dependency: preconditions
             for pk, pv in node_b.preconditions.items():
                 # Find which selected action produces this precondition's required state
                 for action_a in actions:
@@ -478,6 +272,18 @@ class CSPPlanner:
                     node_a = self._nodes[action_a]
                     if node_a.effects.get(pk) == pv:
                         deps[action_b].add(action_a)
+
+            # Soft dependency: filter_templates — if B can consume a filter
+            # from A's output, B should come after A
+            if hasattr(node_b, "filter_templates") and node_b.filter_templates:
+                for pred_key in node_b.filter_templates:
+                    for action_a in actions:
+                        if action_a == action_b:
+                            continue
+                        node_a = self._nodes[action_a]
+                        # Check if action_a produces this predicate key (any value)
+                        if pred_key in node_a.effects:
+                            deps[action_b].add(action_a)
 
         # Kahn's algorithm
         in_degree = {a: len(deps[a]) for a in actions}
@@ -541,46 +347,6 @@ class CSPPlanner:
 # ---------------------------------------------------------------------------
 # Convenience functions
 # ---------------------------------------------------------------------------
-
-def plan_for_goal(
-    goal_name: str,
-    initial_state: dict[str, str] | None = None,
-    kg: Any = None,
-) -> PlanResult:
-    """Plan a workflow for a named goal using the knowledge graph.
-
-    Args:
-        goal_name: Name of a registered goal (e.g. "offboard_user")
-        initial_state: Override initial state. If None, uses the goal's initial_hints.
-        kg: Knowledge graph instance. If None, uses the singleton.
-
-    Returns:
-        PlanResult with the ordered action sequence.
-    """
-    goal = get_goal(goal_name)
-    if not goal:
-        available = [g.name for g in _GOAL_REGISTRY.values()]
-        return PlanResult(
-            success=False, actions=[], steps=[], goal_name=goal_name,
-            initial_state=initial_state or {}, final_state={},
-            error=f"Unknown goal '{goal_name}'. Available: {available}",
-        )
-
-    if kg is None:
-        from okta_mcp_server.tools.orchestrator.knowledge_graph import get_knowledge_graph
-        kg = get_knowledge_graph()
-
-    init = dict(goal.initial_hints)
-    if initial_state:
-        init.update(initial_state)
-
-    planner = CSPPlanner(kg._nodes)
-    return planner.plan(
-        goal_state=goal.required_state,
-        initial_state=init,
-        goal_name=goal_name,
-    )
-
 
 def plan_for_state(
     goal_state: dict[str, str],

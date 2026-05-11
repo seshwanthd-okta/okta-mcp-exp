@@ -42,8 +42,6 @@ from okta_mcp_server.tools.orchestrator.engine import (
 )
 from okta_mcp_server.tools.orchestrator.knowledge_graph import get_knowledge_graph
 from okta_mcp_server.tools.orchestrator.planner import (
-    list_goals,
-    plan_for_goal,
     plan_for_state,
 )
 
@@ -211,21 +209,56 @@ async def orchestrator_build_plan(
     except ValueError as exc:
         return {"error": str(exc)}
 
-    # Inject the target identifier into the first step's required params
-    first_node = kg.get_node(action_list[0])
-    if first_node:
-        for param in first_node.required_params:
-            step_dicts[0]["params"][param] = target_identifier
-
-    # Parse extra_params and distribute them to every step so that each handler
-    # can pick up the fields it needs (e.g. q= for list_brands, primaryColorHex=
-    # for replace_brand_theme).  Handlers simply ignore params they don't use.
+    # Parse extra_params with optional action-targeting.
+    extra: dict = {}
+    targeted_params: dict[str, dict[str, str]] = {}
     if extra_params:
-        extra: dict = {}
         for pair in extra_params.split(","):
             if "=" in pair:
                 k, v = pair.split("=", 1)
-                extra[k.strip()] = v.strip()
+                k = k.strip()
+                v = v.strip()
+                if k.startswith("@") and ":" in k:
+                    action_target, real_key = k[1:].split(":", 1)
+                    targeted_params.setdefault(
+                        action_target.strip(), {}
+                    )[real_key.strip()] = v
+                else:
+                    extra[k] = v
+
+    # Inject the target identifier into the first step's required params
+    first_node = kg.get_node(action_list[0])
+    if first_node:
+        _PROFILE_FIELDS = {
+            "firstName", "lastName", "email", "login", "mobilePhone",
+            "secondEmail", "displayName", "nickName", "title",
+            "department", "organization", "userType",
+            "name", "description",
+        }
+        if first_node.required_params:
+            for param in first_node.required_params:
+                if param == "profile" and extra.keys() & _PROFILE_FIELDS:
+                    profile_dict = {k: extra.pop(k) for k in list(extra) if k in _PROFILE_FIELDS}
+                    step_dicts[0]["params"]["profile"] = profile_dict
+                else:
+                    step_dicts[0]["params"][param] = target_identifier
+        elif target_identifier:
+            for param in (first_node.optional_params or []):
+                if param.endswith("_id") or param == "name":
+                    step_dicts[0]["params"][param] = target_identifier
+                    break
+
+    # Apply action-targeted params to their specific steps.
+    if targeted_params:
+        for step_dict in step_dicts:
+            action_name = step_dict["action"]
+            if action_name in targeted_params:
+                for k, v in targeted_params[action_name].items():
+                    step_dict["params"][k] = v
+
+    # Distribute remaining broadcast extra_params to every step so that
+    # each handler can pick up the fields it needs.
+    if extra:
         for step_dict in step_dicts:
             step_dict["params"].update(extra)
 
@@ -279,6 +312,7 @@ async def orchestrator_build_plan(
 async def orchestrator_execute(
     ctx: Context,
     plan_id: str,
+    param_overrides: Optional[dict] = None,
 ) -> dict:
     """Execute an approved workflow plan server-side.
 
@@ -293,18 +327,32 @@ async def orchestrator_execute(
     Parameters:
         plan_id (str, required): The plan ID returned by orchestrator_plan_for_goal.
             Found in the response under plan → plan_id.
+        param_overrides (dict, optional): A dict mapping step numbers (as strings)
+            to dicts of parameter overrides. These are merged into the step's params
+            before execution. Use this to supply data the planner cannot auto-wire,
+            such as request_data, campaign_data, or filter expressions.
+            Example: {"1": {"request_data": {"name": "Test", "type": "APP"}}}
 
     Returns:
         Dict with step-by-step execution results, context, and a summary.
 
     Example:
         # Step 1 — get a plan:
-        result = orchestrator_plan_for_goal(goal_name="offboard_user",
-                                           target_identifier="john@acme.com")
+        result = orchestrator_plan_for_goal(
+            goal_state="user.apps=AUDITED,user.group_memberships=REVOKED,user.sessions=REVOKED,user.status=DEACTIVATED",
+            initial_state="user.identifier=PROVIDED",
+            target_identifier="john@acme.com"
+        )
         plan_id = result["plan"]["plan_id"]
 
         # Step 2 — execute it:
         orchestrator_execute(plan_id=plan_id)
+
+        # With param overrides (e.g. for governance request creation):
+        orchestrator_execute(
+            plan_id=plan_id,
+            param_overrides={"1": {"request_data": {"name": "Test Request"}}}
+        )
     """
     logger.info(f"orchestrator_execute: plan_id='{plan_id}'")
 
@@ -325,6 +373,18 @@ async def orchestrator_execute(
             "error": f"Plan '{plan_id}' is in state '{plan.status.value}' and cannot be executed.",
             "summary": plan.to_summary(),
         }
+
+    # Apply param_overrides if provided
+    if param_overrides:
+        try:
+            overrides = param_overrides
+            for step in plan.steps:
+                step_key = str(step.number)
+                if step_key in overrides and isinstance(overrides[step_key], dict):
+                    step.params.update(overrides[step_key])
+                    logger.info(f"Plan {plan_id}: Applied param overrides to step {step.number}: {list(overrides[step_key].keys())}")
+        except (ValueError, TypeError) as exc:
+            return {"error": f"Invalid param_overrides: {exc}"}
 
     manager = ctx.request_context.lifespan_context.okta_auth_manager
 
@@ -380,7 +440,7 @@ async def orchestrator_context(ctx: Context) -> dict:
         "graph_stats": kg.get_stats(),
         "hint": (
             "To start a new workflow, call orchestrator_plan_for_goal() with a "
-            "goal_name or a custom goal_state and target_identifier. "
+            "goal_state and target_identifier. "
             "To run a pending plan, call orchestrator_execute(plan_id='...')."
         ),
     }
@@ -389,7 +449,6 @@ async def orchestrator_context(ctx: Context) -> dict:
 @mcp.tool()
 async def orchestrator_plan_for_goal(
     ctx: Context,
-    goal_name: Optional[str] = None,
     goal_state: Optional[str] = None,
     initial_state: Optional[str] = None,
     target_identifier: Optional[str] = None,
@@ -397,373 +456,154 @@ async def orchestrator_plan_for_goal(
 ) -> dict:
     """Plan an Okta workflow using the CSP constraint solver.
 
-    THIS IS THE PRIMARY ENTRY POINT for all multi-step Okta operations.
-    Do NOT try to determine the correct API call sequence yourself — describe
-    your desired end-state and let the solver find the optimal plan.
+    PRIMARY ENTRY POINT for multi-step Okta ops. Builds a plan only —
+    call orchestrator_execute(plan_id=...) to run it. The solver works
+    backward from your goal, finding the minimal action sequence automatically.
 
-    This tool ONLY builds a plan.  To execute it, take the plan_id from the
-    response and call orchestrator_execute(plan_id=...).
+    PARAMETERS
+      goal_state:        "entity.property=VALUE,..." — desired end-state predicates
+      initial_state:     what is already known/provided (often auto-inferred)
+      target_identifier: primary entity email/ID/name (feeds the first step)
+      extra_params:      "key=value,..." broadcast to all steps
 
-    How it works:
-        1. You provide a goal (the desired end-state as predicates).
-        2. The solver searches the knowledge graph's 109 annotated tool nodes
-           and finds the minimal ordered action sequence that reaches that
-           goal state from the current state.
-        3. A plan is built with automatic parameter wiring and returned with
-           a plan_id.
-        4. Call orchestrator_execute(plan_id=...) to run it.
+    PREDICATES — USER
+      user.identifier=PROVIDED | user.profile_data=PROVIDED
+      user.id=KNOWN | user.profile=KNOWN|UPDATED | user.schema=KNOWN
+      user.status=KNOWN|CREATED|ACTIVE|SUSPENDED|DEACTIVATED|DELETED|PROVISIONED|UNLOCKED
+      user.list=KNOWN | user.apps=AUDITED | user.groups=ENUMERATED
+      user.group_membership=GRANTED | user.group_memberships=REVOKED | user.sessions=REVOKED
+      user.password=EXPIRED|CHANGED|RESET | user.temp_password=KNOWN | user.reset_url=KNOWN
+      user.recovery_question=CHANGED | user.password_reset=INITIATED
+      user.factors=ENUMERATED|RESET | user.blocks=ENUMERATED | user.clients=ENUMERATED
+      user.devices=ENUMERATED | user.grants=ENUMERATED|REVOKED
+      user.refresh_tokens=ENUMERATED|REVOKED | user.risk_level=KNOWN|UPDATED
+      user.classification=KNOWN|UPDATED | user.linked_objects=ENUMERATED
+      user.authenticator_enrollments=ENUMERATED
+      factor.id=KNOWN|DELETED | factor.status=KNOWN
+      user_grant.id=KNOWN|REVOKED | user_type.list=KNOWN | user_type.id=KNOWN|DELETED
 
-    ── CHOOSING A GOAL ──
+    PREDICATES — GROUP
+      group.identifier=PROVIDED | group.profile_data=PROVIDED
+      group.id=KNOWN | group.profile=KNOWN|UPDATED
+      group.status=CREATED|DELETED | group.list=KNOWN
+      group.users=ENUMERATED | group.apps=ENUMERATED
+      group.owners=ENUMERATED | group.owner=ASSIGNED|REMOVED
+      group_rule.list=KNOWN | group_rule.id=KNOWN|DELETED
+      group_rule.status=KNOWN|ACTIVE|INACTIVE | group_rule.profile=UPDATED
 
-    OPTION A — Use a predefined goal_name.  These bundle commonly-used
-    goal predicates so you don't have to spell them out:
+    PREDICATES — APP
+      application.identifier=PROVIDED | application.id=KNOWN
+      application.profile=KNOWN|UPDATED
+      application.status=CREATED|ACTIVE|DEACTIVATED|DELETED | application.list=KNOWN
 
-        goal_name                        What it does
-        ─────────────────────────────    ────────────────────────────────────
-        "offboard_user"                  Audit apps → revoke groups → clear sessions → deactivate
-        "suspend_user"                   Clear sessions → suspend account
-        "onboard_user"                   Create user → add to group → activate
-        "audit_user"                     Profile + apps + groups + system logs
-        "rotate_user_credentials"        Clear all sessions (force re-auth)
-        "create_group"                   Create a new group
-        "audit_group"                    Look up group → list members + apps
-        "add_user_to_group"              Resolve user + group → add membership
-        "list_groups"                    List all groups
-        "cleanup_group"                  Look up group → delete
-        "setup_brand"                    List brands → get brand → list themes
-        "configure_custom_domain"        Create → verify → add certificate
-        "configure_email_domain"         Create → verify
-        "setup_device_assurance_policy"  Create policy → list policies
+    PREDICATES — POLICY
+      policy.identifier=PROVIDED | policy.id=KNOWN | policy.profile=KNOWN|UPDATED
+      policy.status=CREATED|ACTIVE|DEACTIVATED|DELETED | policy.list=KNOWN
+      policy.rules=ENUMERATED | policy.simulation_result=KNOWN | policy.apps=ENUMERATED
+      policy.cloned_id=KNOWN | policy.resource_mappings=ENUMERATED | policy.resource_mapping=CREATED
+      policy_rule.id=KNOWN|DELETED | policy_rule.profile=KNOWN|UPDATED
+      policy_rule.status=CREATED|ACTIVE|DEACTIVATED|DELETED
 
-    OPTION B — Supply an ad-hoc goal_state for any workflow not listed above.
-    This is how you create CUSTOM WORKFLOWS without any predefined templates.
-    Compose predicates from the reference below and the solver will find the
-    action sequence automatically.
+    PREDICATES — BRAND / THEME
+      brand.identifier=PROVIDED | brand.id=KNOWN | brand.profile=KNOWN|UPDATED
+      brand.status=CREATED|DELETED | brand.list=KNOWN | brand.domains=ENUMERATED
+      theme.id=KNOWN | theme.profile=KNOWN|UPDATED | theme.list=KNOWN
+      theme.logo=UPLOADED|DELETED | theme.favicon=UPLOADED|DELETED | theme.background=UPLOADED
 
-    DISCOVERY — Call with no arguments to list all registered goals and their
-    required_state predicates (useful for understanding the predicate format).
+    PREDICATES — CUSTOM DOMAIN / EMAIL DOMAIN
+      custom_domain.data=PROVIDED | custom_domain.certificate_data=PROVIDED
+      custom_domain.id=KNOWN | custom_domain.profile=KNOWN|UPDATED
+      custom_domain.status=CREATED|VERIFIED|DELETED | custom_domain.list=KNOWN
+      custom_domain.certificate=CONFIGURED
+      email_domain.data=PROVIDED | email_domain.id=KNOWN | email_domain.profile=KNOWN|UPDATED
+      email_domain.status=CREATED|VERIFIED|DELETED | email_domain.list=KNOWN
 
-    ── HOW TO BUILD A CUSTOM goal_state ──
+    PREDICATES — CUSTOM PAGE
+      custom_page.sign_in_page=KNOWN|UPDATED|DELETED | custom_page.sign_in_page_default=KNOWN
+      custom_page.sign_in_page_preview=KNOWN|UPDATED|DELETED | custom_page.sign_in_page_resources=KNOWN
+      custom_page.error_page=KNOWN|UPDATED|DELETED | custom_page.error_page_default=KNOWN
+      custom_page.error_page_preview=KNOWN|UPDATED|DELETED | custom_page.error_page_resources=KNOWN
+      custom_page.sign_out_settings=KNOWN|UPDATED | custom_page.widget_versions=KNOWN
 
-    1. Identify what you want to be true when the workflow finishes.
-    2. Express each desired outcome as "entity.property=VALUE".
-    3. Combine them with commas.
-    4. Optionally set initial_state to tell the solver what is already true.
+    PREDICATES — EMAIL TEMPLATE
+      email_template.id=KNOWN | email_template.profile=KNOWN | email_template.list=KNOWN
+      email_template.settings=KNOWN|UPDATED | email_template.default_content=KNOWN
+      email_template.default_content_preview=KNOWN | email_template.customization_id=KNOWN
+      email_template.customization=CREATED|DELETED | email_template.customization_profile=KNOWN|UPDATED
+      email_template.customization_preview=KNOWN | email_template.customizations=ENUMERATED|DELETED
+      email_template.test_email=SENT
 
-    The solver works BACKWARD from your goal: it finds which tools produce
-    each predicate (via their *effects*), adds those tools, then resolves
-    their *preconditions* as sub-goals, repeating until all predicates are
-    satisfied by the initial state or tool effects.
+    PREDICATES — DEVICE
+      device.list=KNOWN | device.id=KNOWN|DELETED
+      device.status=KNOWN|ACTIVE|DEACTIVATED|SUSPENDED | device.users=ENUMERATED
+      device_integration.list=KNOWN | device_integration.id=KNOWN
+      device_integration.status=ACTIVE|DEACTIVATED
+      device_posture_check.list=KNOWN | device_posture_check.id=KNOWN|DELETED
+      device_posture_check.profile=UPDATED
+      device_assurance.data=PROVIDED | device_assurance.id=KNOWN
+      device_assurance.profile=KNOWN|UPDATED
+      device_assurance.status=CREATED|DELETED | device_assurance.list=KNOWN
 
-    Example thought process:
-        "I want to deactivate a user and revoke their sessions"
-        → goal_state = "user.status=DEACTIVATED,user.sessions=REVOKED"
-        → initial_state = "user.identifier=PROVIDED" (I have their email)
-        → solver finds: get_user → clear_user_sessions → deactivate_user
+    PREDICATES — LOG STREAM / PROFILE MAPPING / LOGS
+      log_stream.list=KNOWN | log_stream.id=KNOWN|DELETED
+      log_stream.status=KNOWN|ACTIVE|DEACTIVATED | log_stream.profile=UPDATED
+      profile_mapping.list=KNOWN | profile_mapping.id=KNOWN | profile_mapping.profile=UPDATED
+      log.events=RETRIEVED
 
-    ── STATE PREDICATE REFERENCE ──
+    PREDICATES — GOVERNANCE
+      gov_request_condition.list=KNOWN | gov_request_condition.id=KNOWN|DELETED
+      gov_request_condition.status=ACTIVE|INACTIVE
+      gov_request.list=KNOWN | gov_request.id=KNOWN | gov_request.details=KNOWN
+      gov_request.my_request_id=KNOWN
+      gov_catalog.entries=KNOWN | gov_catalog.entry_id=KNOWN
+      gov_catalog.user_entries=KNOWN | gov_catalog.my_entries=KNOWN | gov_catalog.my_entry_id=KNOWN
+      gov_campaign.list=KNOWN | gov_campaign.id=KNOWN|DELETED
+      gov_campaign.status=KNOWN|LAUNCHED|ENDED
+      gov_review.list=KNOWN | gov_review.id=KNOWN | gov_review.reassignment=DONE
+      gov_entitlement.list=KNOWN | gov_entitlement.id=KNOWN|DELETED | gov_entitlement.values=ENUMERATED
+      gov_entitlement_bundle.list=KNOWN | gov_entitlement_bundle.id=KNOWN|DELETED
+      gov_collection.list=KNOWN | gov_collection.id=KNOWN|DELETED
+      gov_collection.resources=ENUMERATED | gov_collection.assignments=ENUMERATED
+      gov_grant.list=KNOWN | gov_grant.id=KNOWN
+      gov_principal_entitlement.list=KNOWN | gov_principal_entitlement.history=KNOWN
+      gov_principal_entitlement.access=REVOKED
+      gov_label.list=KNOWN | gov_label.id=KNOWN|DELETED | gov_label.resources=KNOWN
+      gov_resource_owner.list=KNOWN | gov_resource_owner.unowned=KNOWN
+      gov_delegate.list=KNOWN | gov_delegate.my_eligible=KNOWN
+      gov_settings.my_settings=KNOWN|UPDATED
 
-    Predicates use the format "entity.property=VALUE".
+    FILTER / SEARCH / Q
+      filter: Okta Expression Language — '<field> eq "<value>"' joined with ' and '
+        Users:  status eq "ACTIVE|SUSPENDED|DEPROVISIONED", memberOf.id eq "00g..."
+        Groups: type eq "OKTA_GROUP|APP_GROUP|BUILT_IN"
+        Logs:   actor.id eq "...", target.id eq "...", eventType eq "..."
+        Apps:   status eq "ACTIVE|INACTIVE"
+      search: SCIM — 'profile.<attr> eq|sw|co "<value>"' or 'status eq "ACTIVE"'
+              (list_users and list_groups only)
+      q:      prefix match on name/email (plain string)
+      Policies require: type=OKTA_SIGN_ON|PASSWORD|MFA_ENROLL|ACCESS_POLICY|PROFILE_ENROLLMENT|IDP_DISCOVERY
+      Auto-wired: get_user→get_logs (actor.id), get_group→get_logs (target.id),
+                  get_group→list_users (memberOf.id)
 
-    Value semantics (what each VALUE means):
-        PROVIDED    — the caller supplies this input data
-        KNOWN       — the system has resolved/fetched this (ID, profile, status)
-        ENUMERATED  — a list/collection has been fetched
-        AUDITED     — assignments have been listed for review
-        RETRIEVED   — log events have been fetched
-        CREATED     — entity was just created
-        ACTIVE      — entity has been activated
-        SUSPENDED   — user account suspended (reversible)
-        DEACTIVATED — entity has been deactivated (irreversible without reactivation)
-        DELETED     — entity has been deleted
-        UPDATED     — entity profile/config has been modified
-        REVOKED     — sessions cleared or group memberships removed
-        GRANTED     — group membership added
-        VERIFIED    — domain has been verified
-        CONFIGURED  — certificate/setting has been configured
-        UPLOADED    — file (logo/favicon/background) has been uploaded
-        SENT        — test email has been sent
+    EXTRA PARAMS KEYS
+      filter, search, q, since, until, type, status, name, description,
+      send_email, expand, limit
+      Action-targeted:    "@action_name:key=value" — injects param into one step only
+      Profile auto-bundle: name/description/firstName/lastName/email/login/
+        mobilePhone/secondEmail/displayName/nickName/title/department/organization/userType
+        → auto-bundled into profile{} when first step needs it
+      Commas are delimiters — values cannot contain commas
 
-    ── Available predicates by entity ──
+    WARNINGS
+      • No "context" param — secondary entity IDs go in extra_params
+      • get_group requires group_id (00g...) not name — use list_groups with q= to find by name
+      • Primary entity → target_identifier | Secondary entity → extra_params
 
-    USER predicates:
-        user.identifier=PROVIDED         ← input: you have a user email/login/ID
-        user.profile_data=PROVIDED       ← input: you have profile data for user creation
-        user.id=KNOWN                    ← resolved by: get_user
-        user.profile=KNOWN               ← resolved by: get_user
-        user.profile=UPDATED             ← resolved by: update_user
-        user.status=KNOWN                ← resolved by: get_user
-        user.status=CREATED              ← resolved by: create_user
-        user.status=ACTIVE               ← resolved by: activate_user / reactivate_user / unlock_user
-        user.status=SUSPENDED            ← resolved by: suspend_user
-        user.status=DEACTIVATED          ← resolved by: deactivate_user
-        user.status=DELETED              ← resolved by: delete_user
-        user.list=KNOWN                  ← resolved by: list_users
-        user.apps=AUDITED                ← resolved by: list_user_app_assignments
-        user.groups=ENUMERATED           ← resolved by: list_user_groups
-        user.group_membership=GRANTED    ← resolved by: add_user_to_group
-        user.group_memberships=REVOKED   ← resolved by: remove_user_from_group
-        user.sessions=REVOKED            ← resolved by: clear_user_sessions
-        user.schema=KNOWN                ← resolved by: get_user_profile_attributes
-
-    GROUP predicates:
-        group.identifier=PROVIDED        ← input: you have a group name/ID
-        group.profile_data=PROVIDED      ← input: you have group profile data
-        group.id=KNOWN                   ← resolved by: get_group
-        group.profile=KNOWN              ← resolved by: get_group
-        group.profile=UPDATED            ← resolved by: update_group
-        group.status=CREATED             ← resolved by: create_group
-        group.status=DELETED             ← resolved by: delete_group
-        group.list=KNOWN                 ← resolved by: list_groups
-        group.users=ENUMERATED           ← resolved by: list_group_users
-        group.apps=ENUMERATED            ← resolved by: list_group_apps
-
-    APPLICATION predicates:
-        application.identifier=PROVIDED  ← input: you have an app ID
-        application.id=KNOWN             ← resolved by: get_application
-        application.profile=KNOWN        ← resolved by: get_application
-        application.profile=UPDATED      ← resolved by: update_application
-        application.status=CREATED       ← resolved by: create_application
-        application.status=ACTIVE        ← resolved by: activate_application
-        application.status=DEACTIVATED   ← resolved by: deactivate_application
-        application.status=DELETED       ← resolved by: delete_application
-        application.list=KNOWN           ← resolved by: list_applications
-
-    POLICY predicates:
-        policy.identifier=PROVIDED       ← input: you have a policy ID
-        policy.id=KNOWN                  ← resolved by: get_policy
-        policy.profile=KNOWN             ← resolved by: get_policy
-        policy.profile=UPDATED           ← resolved by: update_policy
-        policy.status=CREATED            ← resolved by: create_policy
-        policy.status=ACTIVE             ← resolved by: activate_policy
-        policy.status=DEACTIVATED        ← resolved by: deactivate_policy
-        policy.status=DELETED            ← resolved by: delete_policy
-        policy.list=KNOWN                ← resolved by: list_policies
-        policy.rules=ENUMERATED          ← resolved by: list_policy_rules
-        policy_rule.id=KNOWN             ← resolved by: get_policy_rule
-        policy_rule.profile=KNOWN        ← resolved by: get_policy_rule
-        policy_rule.profile=UPDATED      ← resolved by: update_policy_rule
-        policy_rule.status=CREATED       ← resolved by: create_policy_rule
-        policy_rule.status=ACTIVE        ← resolved by: activate_policy_rule
-        policy_rule.status=DEACTIVATED   ← resolved by: deactivate_policy_rule
-        policy_rule.status=DELETED       ← resolved by: delete_policy_rule
-
-    BRAND / THEME predicates:
-        brand.identifier=PROVIDED        ← input: you have a brand ID
-        brand.id=KNOWN                   ← resolved by: get_brand
-        brand.profile=KNOWN              ← resolved by: get_brand
-        brand.profile=UPDATED            ← resolved by: update_brand
-        brand.status=CREATED             ← resolved by: create_brand
-        brand.status=DELETED             ← resolved by: delete_brand
-        brand.list=KNOWN                 ← resolved by: list_brands
-        brand.domains=ENUMERATED         ← resolved by: list_brand_domains
-        theme.id=KNOWN                   ← resolved by: get_brand_theme
-        theme.profile=KNOWN              ← resolved by: get_brand_theme
-        theme.profile=UPDATED            ← resolved by: replace_brand_theme
-        theme.list=KNOWN                 ← resolved by: list_brand_themes
-        theme.logo=UPLOADED              ← resolved by: upload_brand_theme_logo
-        theme.logo=DELETED               ← resolved by: delete_brand_theme_logo
-        theme.favicon=UPLOADED           ← resolved by: upload_brand_theme_favicon
-        theme.favicon=DELETED            ← resolved by: delete_brand_theme_favicon
-        theme.background=UPLOADED        ← resolved by: upload_brand_theme_background
-
-    CUSTOM DOMAIN predicates:
-        custom_domain.data=PROVIDED      ← input: domain configuration data
-        custom_domain.certificate_data=PROVIDED ← input: certificate data
-        custom_domain.id=KNOWN           ← resolved by: get_custom_domain / create
-        custom_domain.profile=KNOWN      ← resolved by: get_custom_domain
-        custom_domain.profile=UPDATED    ← resolved by: update_custom_domain
-        custom_domain.status=CREATED     ← resolved by: create_custom_domain
-        custom_domain.status=VERIFIED    ← resolved by: verify_custom_domain
-        custom_domain.status=DELETED     ← resolved by: delete_custom_domain
-        custom_domain.list=KNOWN         ← resolved by: list_custom_domains
-        custom_domain.certificate=CONFIGURED ← resolved by: upsert_custom_domain_certificate
-
-    CUSTOM PAGE predicates:
-        custom_page.sign_in_page=KNOWN|UPDATED|DELETED
-        custom_page.sign_in_page_default=KNOWN
-        custom_page.sign_in_page_preview=KNOWN|UPDATED|DELETED
-        custom_page.sign_in_page_resources=KNOWN
-        custom_page.error_page=KNOWN|UPDATED|DELETED
-        custom_page.error_page_default=KNOWN
-        custom_page.error_page_preview=KNOWN|UPDATED|DELETED
-        custom_page.error_page_resources=KNOWN
-        custom_page.sign_out_settings=KNOWN|UPDATED
-        custom_page.widget_versions=KNOWN
-
-    EMAIL DOMAIN predicates:
-        email_domain.data=PROVIDED       ← input: email domain config
-        email_domain.id=KNOWN            ← resolved by: get_email_domain / create
-        email_domain.profile=KNOWN       ← resolved by: get_email_domain
-        email_domain.profile=UPDATED     ← resolved by: update_email_domain
-        email_domain.status=CREATED      ← resolved by: create_email_domain
-        email_domain.status=VERIFIED     ← resolved by: verify_email_domain
-        email_domain.status=DELETED      ← resolved by: delete_email_domain
-        email_domain.list=KNOWN          ← resolved by: list_email_domains
-
-    EMAIL TEMPLATE predicates:
-        email_template.id=KNOWN          ← resolved by: get_email_template
-        email_template.profile=KNOWN     ← resolved by: get_email_template
-        email_template.list=KNOWN        ← resolved by: list_email_templates
-        email_template.settings=KNOWN|UPDATED
-        email_template.default_content=KNOWN
-        email_template.default_content_preview=KNOWN
-        email_template.customization_id=KNOWN
-        email_template.customization=CREATED|DELETED
-        email_template.customization_profile=KNOWN|UPDATED
-        email_template.customization_preview=KNOWN
-        email_template.customizations=ENUMERATED|DELETED
-        email_template.test_email=SENT
-
-    DEVICE ASSURANCE predicates:
-        device_assurance.data=PROVIDED   ← input: device assurance policy data
-        device_assurance.id=KNOWN        ← resolved by: get / create
-        device_assurance.profile=KNOWN   ← resolved by: get
-        device_assurance.profile=UPDATED ← resolved by: update
-        device_assurance.status=CREATED  ← resolved by: create
-        device_assurance.status=DELETED  ← resolved by: delete
-        device_assurance.list=KNOWN      ← resolved by: list
-
-    SYSTEM LOG predicates:
-        log.events=RETRIEVED             ← resolved by: get_logs (no preconditions)
-
-    ── PARAMETERS ──
-
-    Parameters:
-        goal_name (str, optional): A predefined goal name from the table above.
-            These bundle commonly-used predicates with sensible initial state
-            assumptions.  The solver expands them into the correct action sequence.
-
-        goal_state (str, optional): Ad-hoc goal as comma-separated predicates.
-            Each predicate is "entity.property=VALUE" from the reference above.
-            The solver finds actions whose effects produce these predicates and
-            chains them together automatically.
-
-            Simple examples:
-                "user.status=DEACTIVATED"
-                "user.list=KNOWN"
-                "log.events=RETRIEVED"
-                "group.status=DELETED"
-                "application.list=KNOWN"
-
-            Composite examples (multiple predicates = multi-step workflow):
-                "user.status=DEACTIVATED,user.sessions=REVOKED"
-                "user.status=DEACTIVATED,user.group_memberships=REVOKED,user.sessions=REVOKED"
-                "brand.list=KNOWN,theme.list=KNOWN"
-                "custom_domain.status=VERIFIED,custom_domain.certificate=CONFIGURED"
-                "group.id=KNOWN,group.users=ENUMERATED,group.apps=ENUMERATED"
-                "user.id=KNOWN,user.apps=AUDITED,user.groups=ENUMERATED,log.events=RETRIEVED"
-
-        initial_state (str, optional): Override initial state assumptions.
-            Tells the solver what is already known before planning starts.
-            Format: "entity.property=VALUE,..."
-
-            Common patterns:
-                "user.identifier=PROVIDED"       — you have a user email/login/ID
-                "group.identifier=PROVIDED"      — you have a group name/ID
-                "user.id=KNOWN"                  — user ID already resolved
-                "group.id=KNOWN"                 — group ID already resolved
-                "brand.identifier=PROVIDED"      — you have a brand ID
-                "user.identifier=PROVIDED,group.identifier=PROVIDED"  — both available
-
-            Usually not needed for predefined goals (they include sensible defaults).
-            REQUIRED for ad-hoc goal_state when the workflow needs input data.
-
-        target_identifier (str, optional): The primary identifier for the target
-            entity (e.g. user email, group name, brand ID).
-            Only needed when the first action in the plan requires an input
-            identifier (e.g. get_user needs a user_id).  For actions that
-            don't need an identifier (e.g. list_brands, list_groups, get_logs),
-            this can be omitted entirely.
-
-        extra_params (str, optional): Additional static params as "key=value,key=value".
-            Distributed to every step so each handler can pick up what it needs.
-            Examples:
-                "name=Engineering"           — for get_group (search by name)
-                "send_email=true"            — for activate_user
-                "q=search_term"              — for list_users / list_groups
-
-    ── IMPORTANT: NO "context" PARAMETER ──
-
-        This tool does NOT accept a "context" dict parameter.  Passing a JSON
-        object like {"context": {"group_name": "..."}} will be silently ignored.
-
-        When a workflow involves MULTIPLE entities (e.g. a user AND a group),
-        provide the secondary identifier via extra_params, NOT context:
-
-            WRONG:
-                orchestrator_plan_for_goal(
-                    goal_name="add_user_to_group",
-                    target_identifier="john@acme.com",
-                    context={"group_name": "TestGroup"}   ← IGNORED
-                )
-
-            CORRECT:
-                orchestrator_plan_for_goal(
-                    goal_name="add_user_to_group",
-                    target_identifier="john@acme.com",
-                    extra_params="name=TestGroup"         ← wired to get_group
-                )
-
-        The target_identifier feeds the FIRST step's required params (e.g. user
-        lookup).  Any additional identifiers for later steps (group name, app ID,
-        policy ID, etc.) must go through extra_params as "key=value" pairs.
-
-    Returns:
-        - If no arguments given: list of all registered goals with their predicates.
-        - If planning succeeds: solver result + executable plan with plan_id.
-          Call orchestrator_execute(plan_id=...) to run the plan.
-        - If planning fails: error explaining which predicate could not be satisfied.
-
-    ── USAGE EXAMPLES ──
-
-        # Predefined goal — offboard a user
-        orchestrator_plan_for_goal(goal_name="offboard_user", target_identifier="john@acme.com")
-
-        # Ad-hoc goal — just deactivate and clear sessions
-        orchestrator_plan_for_goal(
-            goal_state="user.status=DEACTIVATED,user.sessions=REVOKED",
-            initial_state="user.identifier=PROVIDED",
-            target_identifier="jane@acme.com"
-        )
-
-        # Ad-hoc goal — audit a user's apps and groups
-        orchestrator_plan_for_goal(
-            goal_state="user.id=KNOWN,user.apps=AUDITED,user.groups=ENUMERATED",
-            initial_state="user.identifier=PROVIDED",
-            target_identifier="bob@acme.com"
-        )
-
-        # Ad-hoc goal — get system logs (no target entity needed)
-        orchestrator_plan_for_goal(goal_state="log.events=RETRIEVED")
-
-        # Ad-hoc goal — set up a brand with themes
-        orchestrator_plan_for_goal(
-            goal_state="brand.list=KNOWN,brand.id=KNOWN,theme.list=KNOWN",
-            initial_state="brand.identifier=PROVIDED",
-            target_identifier="my-brand-id"
-        )
-
-        # Ad-hoc goal — create a user, add to a group, and activate
-        orchestrator_plan_for_goal(
-            goal_state="user.status=ACTIVE,user.group_membership=GRANTED",
-            initial_state="user.profile_data=PROVIDED,group.identifier=PROVIDED",
-            target_identifier="newuser@acme.com",
-            extra_params="group_name=Engineering"
-        )
-
-        # Discover available goals
-        orchestrator_plan_for_goal()
     """
-    # If neither goal_name nor goal_state provided, list available goals
-    if not goal_name and not goal_state:
-        goals = list_goals()
+    if not goal_state:
         return {
-            "available_goals": goals,
-            "hint": (
-                "Choose a goal_name from the list, or provide your own goal_state "
-                "as 'key=value,key=value' predicates."
-            ),
+            "error": "goal_state is required. Provide comma-separated predicates like 'user.status=DEACTIVATED,user.sessions=REVOKED'.",
+            "hint": "Use orchestrator_context() to inspect the knowledge graph for available predicates.",
         }
 
     # Parse initial_state if provided
@@ -776,30 +616,27 @@ async def orchestrator_plan_for_goal(
                 k, v = pair.split("=", 1)
                 init_state[k.strip()] = v.strip()
 
-    logger.info(f"orchestrator_plan_for_goal: goal_name='{goal_name}', "
+    logger.info(f"orchestrator_plan_for_goal: "
                 f"goal_state='{goal_state}', target='{target_identifier}'")
 
     kg = get_knowledge_graph()
 
-    if goal_name:
-        result = plan_for_goal(goal_name, initial_state=init_state, kg=kg)
-    else:
-        # Parse ad-hoc goal_state
-        parsed_goal: dict[str, str] = {}
-        for pair in (goal_state or "").split(","):
-            pair = pair.strip()
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                parsed_goal[k.strip()] = v.strip()
-        if not parsed_goal:
-            return {"error": "Invalid goal_state format. Use 'key=value,key=value'."}
-        result = plan_for_state(parsed_goal, initial_state=init_state, kg=kg)
+    # Parse goal_state
+    parsed_goal: dict[str, str] = {}
+    for pair in (goal_state or "").split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            parsed_goal[k.strip()] = v.strip()
+    if not parsed_goal:
+        return {"error": "Invalid goal_state format. Use 'key=value,key=value'."}
+    result = plan_for_state(parsed_goal, initial_state=init_state, kg=kg)
 
     if not result.success:
         return {
             "success": False,
             "error": result.error,
-            "goal": goal_name or "ad_hoc",
+            "goal": "ad_hoc",
             "hint": "The planner could not find a valid action sequence for this goal.",
         }
 
@@ -810,7 +647,7 @@ async def orchestrator_plan_for_goal(
 
     # ── Build an executable plan ──
     if result.actions:
-        wf_name = goal_name or "csp_workflow"
+        wf_name = "csp_workflow"
         desc = f"CSP-planned workflow: {' → '.join(result.actions)}"
 
         # Reuse the existing build_plan logic
@@ -820,26 +657,114 @@ async def orchestrator_plan_for_goal(
             response["build_error"] = str(exc)
             return response
 
+        # Parse extra_params with optional action-targeting.
+        # Syntax:  key=value               → broadcast to all steps
+        #          @action_name:key=value   → only inject into that action's step
+        extra: dict = {}
+        targeted_params: dict[str, dict[str, str]] = {}  # action → {key: value}
+        if extra_params:
+            for pair in extra_params.split(","):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if k.startswith("@") and ":" in k:
+                        action_target, real_key = k[1:].split(":", 1)
+                        targeted_params.setdefault(
+                            action_target.strip(), {}
+                        )[real_key.strip()] = v
+                    else:
+                        extra[k] = v
+
         # Inject target identifier into the first step's required params
         # (only when the first step actually needs input and a target was given)
         first_node = kg.get_node(result.actions[0])
+        # Profile fields that should be bundled into a dict, not set as scalars
+        _PROFILE_FIELDS = {
+            "firstName", "lastName", "email", "login", "mobilePhone",
+            "secondEmail", "displayName", "nickName", "title",
+            "department", "organization", "userType",
+            "name", "description",
+        }
         if first_node and target_identifier:
-            for param in first_node.required_params:
-                step_dicts[0]["params"][param] = target_identifier
+            if first_node.required_params:
+                for param in first_node.required_params:
+                    if param == "profile" and extra.keys() & _PROFILE_FIELDS:
+                        # Build a profile dict from extra_params profile fields
+                        profile_dict = {k: extra.pop(k) for k in list(extra) if k in _PROFILE_FIELDS}
+                        step_dicts[0]["params"]["profile"] = profile_dict
+                    else:
+                        step_dicts[0]["params"][param] = target_identifier
+            else:
+                # P1 fix: first step has no required params — inject
+                # target_identifier into the first identifier-like optional param.
+                for param in (first_node.optional_params or []):
+                    if param.endswith("_id") or param == "name":
+                        step_dicts[0]["params"][param] = target_identifier
+                        break
             if init_state:
                 for param in (first_node.optional_params or []):
                     if param in init_state:
                         step_dicts[0]["params"][param] = init_state[param]
+        elif first_node and not target_identifier:
+            # No target_identifier — still build profile dict from extra_params
+            # if the first step requires a 'profile' param (e.g. create_group).
+            if first_node.required_params:
+                for param in first_node.required_params:
+                    if param == "profile" and extra.keys() & _PROFILE_FIELDS:
+                        profile_dict = {k: extra.pop(k) for k in list(extra) if k in _PROFILE_FIELDS}
+                        step_dicts[0]["params"]["profile"] = profile_dict
 
-        # Parse extra_params and distribute to every step so each handler
-        # can pick up the fields it needs (e.g. name= for get_group).
+        # P3 fix: inject target_identifier into secondary entity-resolution
+        # steps whose required params are not auto-wired from upstream.
+        # Only when the step has an identifier precondition and a single
+        # unresolved required param.
+        if target_identifier and len(result.actions) > 1:
+            for idx, action_name in enumerate(result.actions[1:], start=1):
+                node = kg.get_node(action_name)
+                if not node:
+                    continue
+                # Only entity-resolution steps (precondition = *.identifier=PROVIDED)
+                has_id_precondition = any(
+                    k.endswith(".identifier") and v == "PROVIDED"
+                    for k, v in node.preconditions.items()
+                )
+                if not has_id_precondition:
+                    continue
+                # Collect required params not already wired by build_execution_chain
+                unresolved = [
+                    p for p in node.required_params
+                    if p not in step_dicts[idx]["params"]
+                ]
+                # Also check identifier-like optional params if no required params
+                if not node.required_params:
+                    unresolved = [
+                        p for p in (node.optional_params or [])
+                        if (p.endswith("_id") or p == "name")
+                        and p not in step_dicts[idx]["params"]
+                    ]
+                # Only inject when targeted params or extra provide the identifier;
+                # never blindly duplicate target_identifier into secondary steps
+                # (that would give the wrong entity). Instead, check targeted_params
+                # and extra for matching param names.
+                for p in unresolved:
+                    if action_name in targeted_params and p in targeted_params[action_name]:
+                        step_dicts[idx]["params"][p] = targeted_params[action_name].pop(p)
+                    elif p in extra:
+                        step_dicts[idx]["params"][p] = extra[p]
+
+        # P2 fix: apply action-targeted params to their specific steps.
+        if targeted_params:
+            for step_dict in step_dicts:
+                action_name = step_dict["action"]
+                if action_name in targeted_params:
+                    for k, v in targeted_params[action_name].items():
+                        step_dict["params"][k] = v
+
+        # Distribute remaining broadcast extra_params to every step so each
+        # handler can pick up the fields it needs (e.g. name= for get_group).
         # Handlers simply ignore params they don't use.
-        if extra_params:
-            extra: dict = {}
-            for pair in extra_params.split(","):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    extra[k.strip()] = v.strip()
+        if extra:
             for step_dict in step_dicts:
                 for k, v in extra.items():
                     if k not in step_dict["params"]:

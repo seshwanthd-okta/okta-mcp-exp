@@ -14,6 +14,12 @@ from okta_mcp_server.utils.auth.auth_manager import SERVICE_NAME, OktaAuthManage
 
 async def get_okta_client(manager: OktaAuthManager) -> OktaClient:
     """Initialize and return an Okta client"""
+    # Engine mode: return a pre-resolved client when available.
+    resolved = getattr(manager, "_resolved_client", None)
+    if resolved is not None:
+        logger.debug("Returning pre-resolved Okta client (engine mode)")
+        return resolved
+
     logger.debug("Initializing Okta client")
     if not await manager.is_valid_token():
         logger.warning("Token is invalid or expired, re-authenticating")

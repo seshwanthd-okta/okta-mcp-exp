@@ -8,13 +8,13 @@
 """Tests for the CSP-based Workflow Planner.
 
 Covers:
-  1. Goal registry — registration, lookup, built-in goals
-  2. CSP planner core — backward chaining, topological sort,
+  1. CSP planner core — backward chaining, topological sort,
      action selection, cycle detection, error handling
-  3. Integration with the real Knowledge Graph — planning for
-     predefined goals produces valid action sequences
-  4. MCP tool — orchestrator_plan_for_goal
-  5. Edge cases — empty goals, unknown goals, unsolvable goals
+  2. Integration with the real Knowledge Graph — planning for
+     ad-hoc goal states produces valid action sequences
+  3. MCP tool — orchestrator_plan_for_goal
+  4. Edge cases — empty goals, unsolvable goals
+  5. Target Identifier & Extra Params Routing
 """
 
 from __future__ import annotations
@@ -40,14 +40,8 @@ from okta_mcp_server.tools.orchestrator.knowledge_graph import (
 )
 from okta_mcp_server.tools.orchestrator.planner import (
     CSPPlanner,
-    Goal,
     PlanResult,
-    get_goal,
-    list_goals,
-    plan_for_goal,
     plan_for_state,
-    register_goal,
-    reset_goals,
 )
 
 
@@ -60,11 +54,9 @@ def _clean_state():
     """Reset all singletons before each test."""
     reset_session()
     reset_knowledge_graph()
-    reset_goals()
     yield
     reset_session()
     reset_knowledge_graph()
-    reset_goals()
 
 
 @pytest.fixture
@@ -147,70 +139,7 @@ def _make_ctx():
 
 
 # ===========================================================================
-# 1. Goal Registry Tests
-# ===========================================================================
-
-class TestGoalRegistry:
-    """Tests for goal registration and lookup."""
-
-    def test_builtin_goals_registered(self):
-        """All built-in goals are registered on module load."""
-        goals = list_goals()
-        names = [g["name"] for g in goals]
-        assert "offboard_user" in names
-        assert "suspend_user" in names
-        assert "onboard_user" in names
-        assert "audit_user" in names
-        assert "rotate_user_credentials" in names
-        assert "setup_brand" in names
-        assert "configure_custom_domain" in names
-        assert "configure_email_domain" in names
-        assert "setup_device_assurance_policy" in names
-        assert "cleanup_group" in names
-
-    def test_get_goal(self):
-        """Can retrieve a registered goal by name."""
-        goal = get_goal("offboard_user")
-        assert goal is not None
-        assert goal.name == "offboard_user"
-        assert "user.status" in goal.required_state
-        assert goal.required_state["user.status"] == "DEACTIVATED"
-
-    def test_get_goal_unknown(self):
-        """Returns None for unknown goal."""
-        assert get_goal("nonexistent") is None
-
-    def test_register_custom_goal(self):
-        """Can register and retrieve a custom goal."""
-        register_goal(Goal(
-            name="lockdown_user",
-            description="Lock down a user completely",
-            required_state={"user.status": "DEACTIVATED", "user.sessions": "CLEARED"},
-        ))
-        goal = get_goal("lockdown_user")
-        assert goal is not None
-        assert goal.required_state["user.status"] == "DEACTIVATED"
-
-    def test_list_goals_returns_dicts(self):
-        """list_goals returns serializable dicts."""
-        goals = list_goals()
-        assert len(goals) >= 14
-        for g in goals:
-            assert "name" in g
-            assert "description" in g
-            assert "required_state" in g
-
-    def test_reset_goals(self):
-        """reset_goals clears custom goals and restores built-ins."""
-        register_goal(Goal(name="custom", description="test", required_state={}))
-        assert get_goal("custom") is not None
-        reset_goals()
-        assert get_goal("custom") is None
-        assert get_goal("offboard_user") is not None  # built-in restored
-
-
-# ===========================================================================
-# 2. CSP Planner Core Tests (with mini_kg)
+# 1. CSP Planner Core Tests (with mini_kg)
 # ===========================================================================
 
 class TestCSPPlannerCore:
@@ -364,24 +293,32 @@ class TestCSPPlannerCore:
 
 
 # ===========================================================================
-# 3. Integration Tests with Real Knowledge Graph
+# 2. Integration Tests with Real Knowledge Graph
 # ===========================================================================
 
 class TestCSPPlannerIntegration:
-    """Integration tests using the full 109-node knowledge graph."""
+    """Integration tests using the full knowledge graph."""
 
     def test_offboard_user_plan(self, kg):
         """CSP solver generates a valid offboard_user workflow."""
-        result = plan_for_goal("offboard_user", kg=kg)
+        result = plan_for_state(
+            goal_state={"user.id": "KNOWN", "user.profile": "KNOWN", "user.apps": "AUDITED",
+                        "user.group_memberships": "REVOKED", "user.sessions": "REVOKED",
+                        "user.status": "DEACTIVATED"},
+            initial_state={"user.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "get_user" in result.actions
         assert "deactivate_user" in result.actions
-        # get_user must come before deactivate_user
         assert result.actions.index("get_user") < result.actions.index("deactivate_user")
 
     def test_suspend_user_plan(self, kg):
         """CSP solver generates a valid suspend_user workflow."""
-        result = plan_for_goal("suspend_user", kg=kg)
+        result = plan_for_state(
+            goal_state={"user.id": "KNOWN", "user.profile": "KNOWN",
+                        "user.sessions": "REVOKED", "user.status": "SUSPENDED"},
+            initial_state={"user.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "get_user" in result.actions
         assert "suspend_user" in result.actions
@@ -389,14 +326,22 @@ class TestCSPPlannerIntegration:
 
     def test_onboard_user_plan(self, kg):
         """CSP solver generates a valid onboard_user workflow."""
-        result = plan_for_goal("onboard_user", kg=kg)
+        result = plan_for_state(
+            goal_state={"user.id": "KNOWN", "user.status": "ACTIVE",
+                        "user.group_membership": "GRANTED"},
+            initial_state={"user.profile_data": "PROVIDED", "group.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "create_user" in result.actions
         assert "add_user_to_group" in result.actions
 
     def test_audit_user_plan(self, kg):
         """CSP solver generates a valid audit_user workflow."""
-        result = plan_for_goal("audit_user", kg=kg)
+        result = plan_for_state(
+            goal_state={"user.id": "KNOWN", "user.profile": "KNOWN", "user.apps": "AUDITED",
+                        "user.groups": "ENUMERATED", "log.events": "RETRIEVED"},
+            initial_state={"user.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "get_user" in result.actions
         assert "list_user_app_assignments" in result.actions
@@ -405,54 +350,82 @@ class TestCSPPlannerIntegration:
 
     def test_rotate_user_credentials_plan(self, kg):
         """CSP solver generates a valid rotate_user_credentials workflow."""
-        result = plan_for_goal("rotate_user_credentials", kg=kg)
+        result = plan_for_state(
+            goal_state={"user.id": "KNOWN", "user.profile": "KNOWN", "user.sessions": "REVOKED"},
+            initial_state={"user.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "get_user" in result.actions
         assert "clear_user_sessions" in result.actions
 
     def test_setup_brand_plan(self, kg):
         """CSP solver generates a valid setup_brand workflow."""
-        result = plan_for_goal("setup_brand", kg=kg)
+        result = plan_for_state(
+            goal_state={"brand.list": "KNOWN", "brand.id": "KNOWN",
+                        "brand.profile": "KNOWN", "theme.list": "KNOWN"},
+            initial_state={"brand.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
-        # Should include some brand-related actions
         brand_actions = [a for a in result.actions if "brand" in a]
         assert len(brand_actions) > 0
 
     def test_configure_custom_domain_plan(self, kg):
         """CSP solver generates a valid configure_custom_domain workflow."""
-        result = plan_for_goal("configure_custom_domain", kg=kg)
+        result = plan_for_state(
+            goal_state={"custom_domain.id": "KNOWN", "custom_domain.status": "VERIFIED",
+                        "custom_domain.certificate": "CONFIGURED"},
+            initial_state={"custom_domain.data": "PROVIDED", "custom_domain.certificate_data": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "create_custom_domain" in result.actions
         assert "verify_custom_domain" in result.actions
 
     def test_configure_email_domain_plan(self, kg):
         """CSP solver generates a valid configure_email_domain workflow."""
-        result = plan_for_goal("configure_email_domain", kg=kg)
+        result = plan_for_state(
+            goal_state={"email_domain.id": "KNOWN", "email_domain.status": "VERIFIED"},
+            initial_state={"email_domain.data": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "create_email_domain" in result.actions
         assert "verify_email_domain" in result.actions
 
     def test_setup_device_assurance_plan(self, kg):
         """CSP solver generates a valid device_assurance workflow."""
-        result = plan_for_goal("setup_device_assurance_policy", kg=kg)
+        result = plan_for_state(
+            goal_state={"device_assurance.id": "KNOWN", "device_assurance.status": "CREATED",
+                        "device_assurance.list": "KNOWN"},
+            initial_state={"device_assurance.data": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "create_device_assurance_policy" in result.actions
 
     def test_cleanup_group_plan(self, kg):
         """CSP solver generates a valid cleanup_group workflow."""
-        result = plan_for_goal("cleanup_group", kg=kg)
+        result = plan_for_state(
+            goal_state={"group.id": "KNOWN", "group.profile": "KNOWN", "group.status": "DELETED"},
+            initial_state={"group.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "delete_group" in result.actions
 
     def test_create_group_plan(self, kg):
         """CSP solver generates a valid create_group workflow."""
-        result = plan_for_goal("create_group", kg=kg)
+        result = plan_for_state(
+            goal_state={"group.id": "KNOWN", "group.status": "CREATED"},
+            initial_state={"group.profile_data": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "create_group" in result.actions
 
     def test_audit_group_plan(self, kg):
         """CSP solver generates a valid audit_group workflow."""
-        result = plan_for_goal("audit_group", kg=kg)
+        result = plan_for_state(
+            goal_state={"group.id": "KNOWN", "group.profile": "KNOWN",
+                        "group.users": "ENUMERATED", "group.apps": "ENUMERATED",
+                        "log.events": "RETRIEVED"},
+            initial_state={"group.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "get_group" in result.actions
         assert "list_group_users" in result.actions
@@ -460,7 +433,11 @@ class TestCSPPlannerIntegration:
 
     def test_add_user_to_group_plan(self, kg):
         """CSP solver generates a valid add_user_to_group workflow."""
-        result = plan_for_goal("add_user_to_group", kg=kg)
+        result = plan_for_state(
+            goal_state={"user.id": "KNOWN", "group.id": "KNOWN",
+                        "user.group_membership": "GRANTED"},
+            initial_state={"user.identifier": "PROVIDED", "group.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "get_user" in result.actions
         assert "get_group" in result.actions
@@ -468,12 +445,14 @@ class TestCSPPlannerIntegration:
 
     def test_list_groups_plan(self, kg):
         """CSP solver generates a valid list_groups workflow."""
-        result = plan_for_goal("list_groups", kg=kg)
+        result = plan_for_state(
+            goal_state={"group.list": "KNOWN"}, kg=kg,
+        )
         assert result.success, f"Failed: {result.error}"
         assert "list_groups" in result.actions
 
     def test_ad_hoc_goal_state(self, kg):
-        """Plan with an ad-hoc goal state (not from registry)."""
+        """Plan with an ad-hoc goal state."""
         result = plan_for_state(
             goal_state={"user.status": "DEACTIVATED"},
             initial_state={"user.identifier": "PROVIDED"},
@@ -483,90 +462,68 @@ class TestCSPPlannerIntegration:
         assert "get_user" in result.actions
         assert "deactivate_user" in result.actions
 
-    def test_unknown_goal_name(self, kg):
-        """Unknown goal name returns informative error."""
-        result = plan_for_goal("nonexistent_goal", kg=kg)
-        assert not result.success
-        assert "Unknown goal" in result.error
-        assert "offboard_user" in result.error  # lists available goals
-
     def test_offboard_user_ordering(self, kg):
         """Offboard user plan respects dependency ordering."""
-        result = plan_for_goal("offboard_user", kg=kg)
+        result = plan_for_state(
+            goal_state={"user.id": "KNOWN", "user.apps": "AUDITED",
+                        "user.group_memberships": "REVOKED", "user.sessions": "REVOKED",
+                        "user.status": "DEACTIVATED"},
+            initial_state={"user.identifier": "PROVIDED"}, kg=kg,
+        )
         assert result.success
         get_idx = result.actions.index("get_user")
         deact_idx = result.actions.index("deactivate_user")
-        # get_user must precede deactivate
         assert get_idx < deact_idx
 
     def test_final_state_covers_goal(self, kg):
         """Final state of planned workflow satisfies all goal predicates."""
-        goal = get_goal("offboard_user")
-        result = plan_for_goal("offboard_user", kg=kg)
+        goal_state = {
+            "user.id": "KNOWN", "user.profile": "KNOWN", "user.apps": "AUDITED",
+            "user.group_memberships": "REVOKED", "user.sessions": "REVOKED",
+            "user.status": "DEACTIVATED",
+        }
+        result = plan_for_state(goal_state, initial_state={"user.identifier": "PROVIDED"}, kg=kg)
         assert result.success
-        for key, value in goal.required_state.items():
+        for key, value in goal_state.items():
             assert result.final_state.get(key) == value, (
                 f"Goal predicate {key}={value} not satisfied in final state. "
                 f"Final state has {key}={result.final_state.get(key)}"
             )
 
-    def test_all_builtin_goals_solvable(self, kg):
-        """Every registered built-in goal can be solved."""
-        for goal_info in list_goals():
-            result = plan_for_goal(goal_info["name"], kg=kg)
-            assert result.success, (
-                f"Goal '{goal_info['name']}' failed: {result.error}"
-            )
-            assert len(result.actions) > 0, (
-                f"Goal '{goal_info['name']}' produced empty plan"
-            )
-
-    def test_all_builtin_goals_final_state_satisfies(self, kg):
-        """Every built-in goal's final state satisfies all required predicates."""
-        for goal_info in list_goals():
-            result = plan_for_goal(goal_info["name"], kg=kg)
-            assert result.success
-            goal = get_goal(goal_info["name"])
-            for key, value in goal.required_state.items():
-                assert result.final_state.get(key) == value, (
-                    f"Goal '{goal_info['name']}': predicate {key}={value} "
-                    f"not in final state (got {result.final_state.get(key)})"
-                )
-
 
 # ===========================================================================
-# 4. MCP Tool Tests
+# 3. MCP Tool Tests
 # ===========================================================================
 
 class TestOrchestratorPlanForGoalTool:
     """Tests for the orchestrator_plan_for_goal MCP tool."""
 
     @pytest.mark.asyncio
-    async def test_list_goals_when_no_args(self):
-        """Calling with no args returns available goals."""
+    async def test_no_args_returns_error(self):
+        """Calling with no args returns an error since goal_state is required."""
         from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
             orchestrator_plan_for_goal,
         )
         ctx = _make_ctx()
         result = await orchestrator_plan_for_goal(ctx)
-        assert "available_goals" in result
-        assert len(result["available_goals"]) >= 14
+        assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_plan_with_goal_name(self):
-        """Plan with a predefined goal name."""
+    async def test_plan_with_goal_state(self):
+        """Plan with a goal state."""
         from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
             orchestrator_plan_for_goal,
         )
         ctx = _make_ctx()
         result = await orchestrator_plan_for_goal(
             ctx,
-            goal_name="suspend_user",
+            goal_state="user.id=KNOWN,user.profile=KNOWN,user.sessions=REVOKED,user.status=SUSPENDED",
+            initial_state="user.identifier=PROVIDED",
             target_identifier="test@example.com",
         )
         assert result["success"] is True
         assert "solver_result" in result
-        assert "plan" in result  # always builds a plan
+        assert "plan" in result
         assert "plan_id" in result["plan"]
 
     @pytest.mark.asyncio
@@ -594,21 +551,22 @@ class TestOrchestratorPlanForGoalTool:
         ctx = _make_ctx()
         result = await orchestrator_plan_for_goal(
             ctx,
-            goal_name="offboard_user",
+            goal_state="user.apps=AUDITED,user.group_memberships=REVOKED,user.sessions=REVOKED,user.status=DEACTIVATED",
+            initial_state="user.identifier=PROVIDED",
         )
         assert result["success"] is True
-        assert "plan" in result  # plan is built even without target_identifier
+        assert "plan" in result
 
     @pytest.mark.asyncio
-    async def test_plan_unknown_goal(self):
-        """Unknown goal name returns error."""
+    async def test_plan_unsolvable_goal(self):
+        """Unsolvable goal state returns error."""
         from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
             orchestrator_plan_for_goal,
         )
         ctx = _make_ctx()
         result = await orchestrator_plan_for_goal(
             ctx,
-            goal_name="nonexistent",
+            goal_state="nonexistent.state=IMPOSSIBLE",
         )
         assert result["success"] is False
         assert "error" in result
@@ -622,7 +580,8 @@ class TestOrchestratorPlanForGoalTool:
         ctx = _make_ctx()
         result = await orchestrator_plan_for_goal(
             ctx,
-            goal_name="suspend_user",
+            goal_state="user.id=KNOWN,user.profile=KNOWN,user.sessions=REVOKED,user.status=SUSPENDED",
+            initial_state="user.identifier=PROVIDED",
             target_identifier="test@example.com",
         )
         assert result["success"] is True
@@ -639,7 +598,8 @@ class TestOrchestratorPlanForGoalTool:
         ctx = _make_ctx()
         result = await orchestrator_plan_for_goal(
             ctx,
-            goal_name="offboard_user",
+            goal_state="user.apps=AUDITED,user.group_memberships=REVOKED,user.sessions=REVOKED,user.status=DEACTIVATED",
+            initial_state="user.identifier=PROVIDED",
             target_identifier="test@example.com",
         )
         assert result["success"] is True
@@ -663,7 +623,7 @@ class TestOrchestratorPlanForGoalTool:
 
 
 # ===========================================================================
-# 5. Edge Cases & Robustness
+# 4. Edge Cases & Robustness
 # ===========================================================================
 
 class TestCSPPlannerEdgeCases:
@@ -696,15 +656,14 @@ class TestCSPPlannerEdgeCases:
         assert result.actions == ["deactivate_user"]
 
     def test_plan_with_override_initial_state(self, kg):
-        """Custom initial_state overrides goal's initial_hints."""
-        result = plan_for_goal(
-            "offboard_user",
+        """Custom initial_state still works when user.id is already known."""
+        result = plan_for_state(
+            goal_state={"user.apps": "AUDITED", "user.group_memberships": "REVOKED",
+                        "user.sessions": "REVOKED", "user.status": "DEACTIVATED"},
             initial_state={"user.id": "KNOWN"},
             kg=kg,
         )
         assert result.success
-        # Should still work but may have fewer steps
-        # since user.id is already KNOWN
         assert "deactivate_user" in result.actions
 
     def test_plan_for_state_minimal(self, kg):
@@ -766,3 +725,186 @@ class TestCSPPlannerEdgeCases:
         for step in result.steps:
             assert "entity_type" in step
             assert "operation" in step
+
+
+# ===========================================================================
+# 5. Target Identifier & Extra Params Routing Tests
+# ===========================================================================
+
+class TestTargetIdentifierRouting:
+    """Tests for P1 (empty required_params), P2 (action-targeted extra_params),
+    and P3 (multi-entity identifier injection)."""
+
+    @pytest.mark.asyncio
+    async def test_p1_target_identifier_empty_required_params(self):
+        """P1: target_identifier is injected into identifier-like optional_params
+        when first step has no required_params."""
+        from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
+            orchestrator_plan_for_goal,
+        )
+        ctx = _make_ctx()
+        result = await orchestrator_plan_for_goal(
+            ctx,
+            goal_state="group.id=KNOWN,group.profile=KNOWN,group.users=ENUMERATED,group.apps=ENUMERATED,log.events=RETRIEVED",
+            initial_state="group.identifier=PROVIDED",
+            target_identifier="Engineering",
+        )
+        assert result["success"] is True
+        # get_group is the first step and has required_params=[]
+        # target_identifier should be injected into group_id (first _id optional param)
+        wiring = result["wiring"]
+        first_step = wiring[0]
+        assert first_step["action"] == "get_group"
+        assert first_step["params"].get("group_id") == "Engineering"
+
+    @pytest.mark.asyncio
+    async def test_p1_target_identifier_with_required_params_unchanged(self):
+        """P1: nodes with required_params still inject normally."""
+        from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
+            orchestrator_plan_for_goal,
+        )
+        ctx = _make_ctx()
+        result = await orchestrator_plan_for_goal(
+            ctx,
+            goal_state="user.id=KNOWN,user.profile=KNOWN,user.sessions=REVOKED,user.status=SUSPENDED",
+            initial_state="user.identifier=PROVIDED",
+            target_identifier="john@acme.com",
+        )
+        assert result["success"] is True
+        wiring = result["wiring"]
+        first_step = wiring[0]
+        assert first_step["action"] == "get_user"
+        assert "user_id_or_login" in first_step["params"] or first_step["params"].get("user_id") == "john@acme.com"
+
+    @pytest.mark.asyncio
+    async def test_p1_no_injection_when_no_identifier_optional_params(self):
+        """P1: first step with no required_params and no identifier-like
+        optional_params does not crash."""
+        from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
+            orchestrator_plan_for_goal,
+        )
+        ctx = _make_ctx()
+        # list_groups has required_params=[] and optional_params=["search","filter","q","limit"]
+        # none are identifier-like → target_identifier should not be injected
+        result = await orchestrator_plan_for_goal(
+            ctx,
+            goal_state="group.list=KNOWN",
+            target_identifier="anything",
+        )
+        assert result["success"] is True
+        wiring = result["wiring"]
+        first_step = wiring[0]
+        assert first_step["action"] == "list_groups"
+        # target_identifier should NOT have been injected into any param
+        assert "group_id" not in first_step["params"]
+        assert "name" not in first_step["params"]
+
+    @pytest.mark.asyncio
+    async def test_p2_action_targeted_extra_params(self):
+        """P2: @action_name:key=value syntax routes params to specific actions."""
+        from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
+            orchestrator_plan_for_goal,
+        )
+        ctx = _make_ctx()
+        result = await orchestrator_plan_for_goal(
+            ctx,
+            goal_state="group.id=KNOWN,group.profile=KNOWN,group.users=ENUMERATED,group.apps=ENUMERATED,log.events=RETRIEVED",
+            initial_state="group.identifier=PROVIDED",
+            target_identifier="Engineering",
+            extra_params="@get_logs:since=2024-01-01T00:00:00Z",
+        )
+        assert result["success"] is True
+        wiring = result["wiring"]
+        # Find the get_logs step
+        logs_step = next(s for s in wiring if s["action"] == "get_logs")
+        assert logs_step["params"].get("since") == "2024-01-01T00:00:00Z"
+        # Ensure non-targeted steps don't get the param
+        group_step = next(s for s in wiring if s["action"] == "get_group")
+        assert "since" not in group_step["params"]
+
+    @pytest.mark.asyncio
+    async def test_p2_targeted_overrides_broadcast(self):
+        """P2: targeted params override broadcast params for the same key."""
+        from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
+            orchestrator_plan_for_goal,
+        )
+        ctx = _make_ctx()
+        result = await orchestrator_plan_for_goal(
+            ctx,
+            goal_state="group.id=KNOWN,log.events=RETRIEVED",
+            initial_state="group.identifier=PROVIDED",
+            target_identifier="TestGroup",
+            extra_params="q=keyword,@get_logs:q=specific-log-keyword",
+        )
+        assert result["success"] is True
+        wiring = result["wiring"]
+        logs_step = next(s for s in wiring if s["action"] == "get_logs")
+        # Targeted param should win over broadcast for get_logs
+        assert logs_step["params"]["q"] == "specific-log-keyword"
+
+    @pytest.mark.asyncio
+    async def test_p2_mixed_targeted_and_broadcast(self):
+        """P2: broadcast params still reach all steps, targeted only their step."""
+        from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
+            orchestrator_plan_for_goal,
+        )
+        ctx = _make_ctx()
+        result = await orchestrator_plan_for_goal(
+            ctx,
+            goal_state="log.events=RETRIEVED",
+            extra_params="since=2024-01-01T00:00:00Z,@get_logs:q=password",
+        )
+        assert result["success"] is True
+        wiring = result["wiring"]
+        logs_step = next(s for s in wiring if s["action"] == "get_logs")
+        assert logs_step["params"].get("since") == "2024-01-01T00:00:00Z"
+        assert logs_step["params"].get("q") == "password"
+
+    @pytest.mark.asyncio
+    async def test_p3_multi_entity_add_user_to_group(self):
+        """P3: multi-entity workflow routes identifiers correctly."""
+        from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
+            orchestrator_plan_for_goal,
+        )
+        ctx = _make_ctx()
+        result = await orchestrator_plan_for_goal(
+            ctx,
+            goal_state="user.id=KNOWN,group.id=KNOWN,user.group_membership=GRANTED",
+            initial_state="user.identifier=PROVIDED,group.identifier=PROVIDED",
+            target_identifier="john@acme.com",
+            extra_params="@get_group:group_id=00gabcdef",
+        )
+        assert result["success"] is True
+        wiring = result["wiring"]
+        # get_user should have user_id from target_identifier
+        user_step = next(s for s in wiring if s["action"] == "get_user")
+        assert user_step["params"].get("user_id") == "john@acme.com"
+        # get_group should have group_id from targeted extra_params
+        group_step = next(s for s in wiring if s["action"] == "get_group")
+        assert group_step["params"].get("group_id") == "00gabcdef"
+        # add_user_to_group should have auto-wired $step refs
+        add_step = next(s for s in wiring if s["action"] == "add_user_to_group")
+        assert "$step" in str(add_step["params"].get("user_id", ""))
+        assert "$step" in str(add_step["params"].get("group_id", ""))
+
+    @pytest.mark.asyncio
+    async def test_p3_secondary_entity_via_broadcast_extra_params(self):
+        """P3: secondary entity gets identifier via broadcast extra_params."""
+        from okta_mcp_server.tools.orchestrator.orchestrator_kg import (
+            orchestrator_plan_for_goal,
+        )
+        ctx = _make_ctx()
+        result = await orchestrator_plan_for_goal(
+            ctx,
+            goal_state="user.id=KNOWN,group.id=KNOWN,user.group_membership=GRANTED",
+            initial_state="user.identifier=PROVIDED,group.identifier=PROVIDED",
+            target_identifier="jane@acme.com",
+            extra_params="group_id=00g999",
+        )
+        assert result["success"] is True
+        wiring = result["wiring"]
+        user_step = next(s for s in wiring if s["action"] == "get_user")
+        assert user_step["params"].get("user_id") == "jane@acme.com"
+        # group_id should reach get_group via broadcast
+        group_step = next(s for s in wiring if s["action"] == "get_group")
+        assert group_step["params"].get("group_id") == "00g999"

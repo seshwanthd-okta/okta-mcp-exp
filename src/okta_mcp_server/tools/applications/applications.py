@@ -47,7 +47,6 @@ from okta_mcp_server.utils.messages import DEACTIVATE_APPLICATION, DELETE_APPLIC
 from okta_mcp_server.utils.validation import validate_ids
 
 
-@mcp.tool()
 async def list_applications(
     ctx: Context,
     q: Optional[str] = None,
@@ -138,7 +137,6 @@ async def list_applications(
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("app_id", error_return_type="dict")
 async def get_application(ctx: Context, app_id: str, expand: Optional[str] = None) -> Any:
     """Get an application by ID from the Okta organization.
@@ -175,7 +173,6 @@ async def get_application(ctx: Context, app_id: str, expand: Optional[str] = Non
         return {"error": str(e)}
 
 
-@mcp.tool()
 async def create_application(ctx: Context, app_config: Dict[str, Any], activate: bool = True) -> Any:
     """Create a new application in the Okta organization.
 
@@ -209,7 +206,6 @@ async def create_application(ctx: Context, app_config: Dict[str, Any], activate:
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("app_id", error_return_type="dict")
 async def update_application(ctx: Context, app_id: str, app_config: Dict[str, Any]) -> Any:
     """Update an application by ID in the Okta organization.
@@ -243,7 +239,6 @@ async def update_application(ctx: Context, app_id: str, app_config: Dict[str, An
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("app_id")
 async def delete_application(ctx: Context, app_id: str) -> list:
     """Delete an application by ID from the Okta organization.
@@ -305,7 +300,6 @@ async def delete_application(ctx: Context, app_id: str) -> list:
         return [{"error": f"Exception: {e}"}]
 
 
-@mcp.tool()
 @validate_ids("app_id")
 async def confirm_delete_application(ctx: Context, app_id: str, confirmation: str) -> list:
     """Confirm and execute application deletion after receiving confirmation.
@@ -351,7 +345,6 @@ async def confirm_delete_application(ctx: Context, app_id: str, confirmation: st
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("app_id")
 async def activate_application(ctx: Context, app_id: str) -> list:
     """Activate an application in the Okta organization.
@@ -384,7 +377,6 @@ async def activate_application(ctx: Context, app_id: str) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("app_id")
 async def deactivate_application(ctx: Context, app_id: str) -> list:
     """Deactivate an application in the Okta organization.
@@ -426,3 +418,35 @@ async def deactivate_application(ctx: Context, app_id: str) -> list:
     except Exception as e:
         logger.error(f"Exception while deactivating application {app_id}: {type(e).__name__}: {e}")
         return [f"Exception: {e}"]
+
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    list_applications,
+    get_application,
+    create_application,
+    update_application,
+    delete_application,
+    confirm_delete_application,
+    activate_application,
+    deactivate_application,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "list_applications": list_applications,
+    "get_application": get_application,
+    "create_application": create_application,
+    "update_application": update_application,
+    "delete_application": delete_application,
+    "activate_application": activate_application,
+    "deactivate_application": deactivate_application,
+}
