@@ -5,6 +5,7 @@
 # Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and limitations under the License.
 
+import json
 from typing import Any, Dict, Optional
 
 import okta.models as okta_models
@@ -46,7 +47,6 @@ from okta_mcp_server.utils.messages import DEACTIVATE_APPLICATION, DELETE_APPLIC
 from okta_mcp_server.utils.validation import validate_ids
 
 
-@mcp.tool()
 async def list_applications(
     ctx: Context,
     q: Optional[str] = None,
@@ -86,40 +86,57 @@ async def list_applications(
 
     try:
         client = await get_okta_client(manager)
-        query_params = {}
 
-        if q:
-            query_params["q"] = q
-        if after:
-            query_params["after"] = after
-        if limit:
-            query_params["limit"] = limit
-        if filter:
-            query_params["filter"] = filter
-        if expand:
-            query_params["expand"] = expand
-        if include_non_deleted is not None:
-            query_params["include_non_deleted"] = include_non_deleted
+        # Use the SDK's request serializer but execute without model deserialization.
+        # The SDK's pydantic models for some JWK credential types define fields as required
+        # StrictStr but the API can return None for them, causing validation errors.
+        # Bypassing deserialization and working with raw JSON avoids this SDK bug.
+        method, url, header_params, body, _post_params = (
+            client._list_applications_serialize(
+                q=q,
+                after=after,
+                use_optimization=None,
+                always_include_vpn_settings=None,
+                limit=limit,
+                filter=filter,
+                expand=expand,
+                include_non_deleted=include_non_deleted,
+                _request_auth=None,
+                _content_type=None,
+                _headers=None,
+                _host_index=0,
+            )
+        )
 
-        logger.debug("Calling Okta API to list applications")
-        apps, _, err = await client.list_applications(**query_params)
+        logger.debug("Calling Okta API to list applications (raw)")
+        request, err = await client._request_executor.create_request(
+            method, url, body, header_params, {}, keep_empty_params=False
+        )
+        if err:
+            logger.error(f"Failed to create request: {err}")
+            return [f"Error: {err}"]
 
+        response, response_body, err = await client._request_executor.execute(request)
         if err:
             logger.error(f"Okta API error while listing applications: {err}")
             return [f"Error: {err}"]
 
-        if not apps:
+        if not response_body:
             logger.info("No applications found")
             return []
 
+        apps = json.loads(response_body) if isinstance(response_body, str) else response_body
+        if not isinstance(apps, list):
+            logger.error(f"Unexpected response format: {type(apps)}")
+            return [f"Error: unexpected response format"]
+
         logger.info(f"Successfully retrieved {len(apps)} applications")
-        return [app for app in apps]
+        return apps
     except Exception as e:
         logger.error(f"Exception while listing applications: {type(e).__name__}: {e}")
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("app_id", error_return_type="dict")
 async def get_application(ctx: Context, app_id: str, expand: Optional[str] = None) -> Any:
     """Get an application by ID from the Okta organization.
@@ -156,7 +173,6 @@ async def get_application(ctx: Context, app_id: str, expand: Optional[str] = Non
         return {"error": str(e)}
 
 
-@mcp.tool()
 async def create_application(ctx: Context, app_config: Dict[str, Any], activate: bool = True) -> Any:
     """Create a new application in the Okta organization.
 
@@ -190,7 +206,6 @@ async def create_application(ctx: Context, app_config: Dict[str, Any], activate:
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("app_id", error_return_type="dict")
 async def update_application(ctx: Context, app_id: str, app_config: Dict[str, Any]) -> Any:
     """Update an application by ID in the Okta organization.
@@ -224,7 +239,6 @@ async def update_application(ctx: Context, app_id: str, app_config: Dict[str, An
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("app_id")
 async def delete_application(ctx: Context, app_id: str) -> list:
     """Delete an application by ID from the Okta organization.
@@ -286,7 +300,6 @@ async def delete_application(ctx: Context, app_id: str) -> list:
         return [{"error": f"Exception: {e}"}]
 
 
-@mcp.tool()
 @validate_ids("app_id")
 async def confirm_delete_application(ctx: Context, app_id: str, confirmation: str) -> list:
     """Confirm and execute application deletion after receiving confirmation.
@@ -332,7 +345,6 @@ async def confirm_delete_application(ctx: Context, app_id: str, confirmation: st
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("app_id")
 async def activate_application(ctx: Context, app_id: str) -> list:
     """Activate an application in the Okta organization.
@@ -365,7 +377,6 @@ async def activate_application(ctx: Context, app_id: str) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("app_id")
 async def deactivate_application(ctx: Context, app_id: str) -> list:
     """Deactivate an application in the Okta organization.
@@ -407,3 +418,35 @@ async def deactivate_application(ctx: Context, app_id: str) -> list:
     except Exception as e:
         logger.error(f"Exception while deactivating application {app_id}: {type(e).__name__}: {e}")
         return [f"Exception: {e}"]
+
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    list_applications,
+    get_application,
+    create_application,
+    update_application,
+    delete_application,
+    confirm_delete_application,
+    activate_application,
+    deactivate_application,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "list_applications": list_applications,
+    "get_application": get_application,
+    "create_application": create_application,
+    "update_application": update_application,
+    "delete_application": delete_application,
+    "activate_application": activate_application,
+    "deactivate_application": deactivate_application,
+}

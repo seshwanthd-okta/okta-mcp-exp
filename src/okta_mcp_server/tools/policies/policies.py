@@ -25,7 +25,6 @@ from okta_mcp_server.utils.messages import (
 from okta_mcp_server.utils.validation import validate_ids
 
 
-@mcp.tool()
 async def list_policies(
     ctx: Context,
     type: str,
@@ -33,6 +32,9 @@ async def list_policies(
     q: Optional[str] = None,
     limit: Optional[int] = 20,
     after: Optional[str] = None,
+    expand: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    resource_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """List all the policies from the Okta organization.
 
@@ -44,6 +46,9 @@ async def list_policies(
         q (str, optional): A query string to search policies by name.
         limit (int, optional): Number of results to return (min 20, max 100).
         after (str, optional): Specifies the pagination cursor for the next page of policies.
+        expand (str, optional): Expand options for the policy response.
+        sort_by (str, optional): Sort the results by a specific field (e.g., 'name', 'created').
+        resource_id (str, optional): Reference to the associated authorization server.
 
     Returns:
         Dict containing:
@@ -51,7 +56,7 @@ async def list_policies(
             - error (str): Error message if the operation fails
     """
     logger.info("Listing policies from Okta organization")
-    logger.debug(f"Type: '{type}', Status: '{status}', Q: '{q}', limit: {limit}")
+    logger.debug(f"Type: '{type}', Status: '{status}', Q: '{q}', limit: {limit}, sort_by: {sort_by}")
 
     # Validate limit parameter range
     if limit is not None:
@@ -73,6 +78,12 @@ async def list_policies(
             params["q"] = q
         if after:
             params["after"] = after
+        if expand:
+            params["expand"] = expand
+        if sort_by:
+            params["sort_by"] = sort_by
+        if resource_id and resource_id != "null":
+            params["resource_id"] = resource_id
         if "limit" in params and params["limit"] is not None:
             params["limit"] = str(params["limit"])
 
@@ -97,7 +108,6 @@ async def list_policies(
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", error_return_type="dict")
 async def get_policy(ctx: Context, policy_id: str) -> Optional[Dict[str, Any]]:
     """Retrieve a specific policy by ID.
@@ -125,7 +135,6 @@ async def get_policy(ctx: Context, policy_id: str) -> Optional[Dict[str, Any]]:
         return {"error": str(e)}
 
 
-@mcp.tool()
 async def create_policy(ctx: Context, policy_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Create a new policy.
 
@@ -160,7 +169,6 @@ async def create_policy(ctx: Context, policy_data: Dict[str, Any]) -> Optional[D
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", error_return_type="dict")
 async def update_policy(ctx: Context, policy_id: str, policy_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update an existing policy.
@@ -189,7 +197,6 @@ async def update_policy(ctx: Context, policy_id: str, policy_data: Dict[str, Any
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", error_return_type="dict")
 async def delete_policy(ctx: Context, policy_id: str) -> Dict[str, Any]:
     """Delete a policy.
@@ -233,7 +240,6 @@ async def delete_policy(ctx: Context, policy_id: str) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", error_return_type="dict")
 async def activate_policy(ctx: Context, policy_id: str) -> Dict[str, Any]:
     """Activate a policy.
@@ -262,7 +268,6 @@ async def activate_policy(ctx: Context, policy_id: str) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", error_return_type="dict")
 async def deactivate_policy(ctx: Context, policy_id: str) -> Dict[str, Any]:
     """Deactivate a policy.
@@ -306,7 +311,6 @@ async def deactivate_policy(ctx: Context, policy_id: str) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", error_return_type="dict")
 async def list_policy_rules(ctx: Context, policy_id: str) -> Dict[str, Any]:
     """List all rules for a specific policy.
@@ -347,7 +351,6 @@ async def list_policy_rules(ctx: Context, policy_id: str) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", "rule_id", error_return_type="dict")
 async def get_policy_rule(ctx: Context, policy_id: str, rule_id: str) -> Optional[Dict[str, Any]]:
     """Retrieve a specific policy rule.
@@ -376,7 +379,6 @@ async def get_policy_rule(ctx: Context, policy_id: str, rule_id: str) -> Optiona
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", error_return_type="dict")
 async def create_policy_rule(ctx: Context, policy_id: str, rule_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Create a new rule for a policy.
@@ -411,7 +413,6 @@ async def create_policy_rule(ctx: Context, policy_id: str, rule_data: Dict[str, 
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", "rule_id", error_return_type="dict")
 async def update_policy_rule(
     ctx: Context, policy_id: str, rule_id: str, rule_data: Dict[str, Any]
@@ -444,7 +445,6 @@ async def update_policy_rule(
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", "rule_id", error_return_type="dict")
 async def delete_policy_rule(ctx: Context, policy_id: str, rule_id: str) -> Dict[str, Any]:
     """Delete a policy rule.
@@ -489,7 +489,6 @@ async def delete_policy_rule(ctx: Context, policy_id: str, rule_id: str) -> Dict
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", "rule_id", error_return_type="dict")
 async def activate_policy_rule(ctx: Context, policy_id: str, rule_id: str) -> Dict[str, Any]:
     """Activate a policy rule.
@@ -519,7 +518,6 @@ async def activate_policy_rule(ctx: Context, policy_id: str, rule_id: str) -> Di
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("policy_id", "rule_id", error_return_type="dict")
 async def deactivate_policy_rule(ctx: Context, policy_id: str, rule_id: str) -> Dict[str, Any]:
     """Deactivate a policy rule.
@@ -560,3 +558,48 @@ async def deactivate_policy_rule(ctx: Context, policy_id: str, rule_id: str) -> 
     except Exception as e:
         logger.error(f"Exception deactivating policy rule: {e}")
         return {"error": str(e)}
+
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    list_policies,
+    get_policy,
+    create_policy,
+    update_policy,
+    delete_policy,
+    activate_policy,
+    deactivate_policy,
+    list_policy_rules,
+    get_policy_rule,
+    create_policy_rule,
+    update_policy_rule,
+    delete_policy_rule,
+    activate_policy_rule,
+    deactivate_policy_rule,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "list_policies": list_policies,
+    "get_policy": get_policy,
+    "create_policy": create_policy,
+    "update_policy": update_policy,
+    "delete_policy": delete_policy,
+    "activate_policy": activate_policy,
+    "deactivate_policy": deactivate_policy,
+    "list_policy_rules": list_policy_rules,
+    "get_policy_rule": get_policy_rule,
+    "create_policy_rule": create_policy_rule,
+    "update_policy_rule": update_policy_rule,
+    "delete_policy_rule": delete_policy_rule,
+    "activate_policy_rule": activate_policy_rule,
+    "deactivate_policy_rule": deactivate_policy_rule,
+}

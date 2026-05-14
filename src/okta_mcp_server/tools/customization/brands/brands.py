@@ -31,7 +31,7 @@ from okta_mcp_server.server import mcp
 from okta_mcp_server.utils.client import get_okta_client
 from okta_mcp_server.utils.elicitation import DeleteConfirmation, elicit_or_fallback
 from okta_mcp_server.utils.messages import DELETE_BRAND
-from okta_mcp_server.utils.pagination import create_paginated_response, paginate_all_results
+from okta_mcp_server.utils.pagination import create_paginated_response, extract_after_cursor, paginate_all_results
 from okta_mcp_server.utils.validation import validate_ids
 
 
@@ -68,7 +68,6 @@ def _build_default_app(default_app_dict: Dict[str, Any]) -> DefaultApp:
 # list_brands
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 async def list_brands(
     ctx: Context,
     expand: Optional[List[str]] = None,
@@ -155,6 +154,26 @@ async def list_brands(
             )
             return create_paginated_response(serialized, response, fetch_all_used=True, pagination_info=pagination_info)
 
+        # Fallback: manual pagination via Link header cursor when has_next() is unavailable
+        if fetch_all:
+            all_brands = list(brands)
+            cursor = extract_after_cursor(response)
+            page = 1
+            while cursor and page < 50:
+                page_kwargs = dict(kwargs)
+                page_kwargs["after"] = cursor
+                next_brands, next_response, next_err = await client.list_brands(**page_kwargs)
+                if next_err or not next_brands:
+                    break
+                all_brands.extend(next_brands)
+                cursor = extract_after_cursor(next_response)
+                page += 1
+            if len(all_brands) > len(brands):
+                pagination_info = {"pages_fetched": page, "total_items": len(all_brands), "stopped_early": False, "stop_reason": None}
+                serialized = [_serialize_brand(b) for b in all_brands]
+                logger.info(f"Successfully retrieved {len(all_brands)} brand(s) via cursor pagination across {page} page(s)")
+                return create_paginated_response(serialized, response, fetch_all_used=True, pagination_info=pagination_info)
+
         serialized = [_serialize_brand(b) for b in brands]
         logger.info(f"Successfully retrieved {len(brands)} brand(s)")
         return create_paginated_response(serialized, response, fetch_all_used=fetch_all)
@@ -168,7 +187,6 @@ async def list_brands(
 # get_brand
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id")
 async def get_brand(
     ctx: Context,
@@ -214,7 +232,6 @@ async def get_brand(
 # create_brand
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 async def create_brand(
     ctx: Context,
     name: str,
@@ -275,7 +292,6 @@ async def create_brand(
 # replace_brand
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id")
 async def replace_brand(
     ctx: Context,
@@ -365,7 +381,6 @@ async def replace_brand(
 # delete_brand
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id")
 async def delete_brand(
     ctx: Context,
@@ -427,7 +442,6 @@ async def delete_brand(
 # list_brand_domains
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id")
 async def list_brand_domains(
     ctx: Context,
@@ -484,3 +498,32 @@ async def list_brand_domains(
     except Exception as e:
         logger.error(f"Exception while listing domains for brand {brand_id}: {type(e).__name__}: {e}")
         return {"error": str(e)}
+
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    list_brands,
+    get_brand,
+    create_brand,
+    replace_brand,
+    delete_brand,
+    list_brand_domains,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "list_brands": list_brands,
+    "get_brand": get_brand,
+    "create_brand": create_brand,
+    "replace_brand": replace_brand,
+    "delete_brand": delete_brand,
+    "list_brand_domains": list_brand_domains,
+}

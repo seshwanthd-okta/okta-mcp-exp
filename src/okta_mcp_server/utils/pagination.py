@@ -134,6 +134,31 @@ async def paginate_all_results(
     return all_items, pagination_info
 
 
+async def auto_paginate(items, response) -> list:
+    """Auto-paginate through all pages of Okta SDK results.
+
+    Used by the orchestrator engine to always return the full result set
+    without artificial limits.
+
+    Args:
+        items: Initial page of items from the SDK call.
+        response: The SDK response object (may support has_next/next).
+
+    Returns:
+        Complete list of all items across all pages.
+    """
+    if not items:
+        return []
+    if response and hasattr(response, "has_next") and response.has_next():
+        all_items, info = await paginate_all_results(response, items)
+        logger.debug(
+            f"Auto-paginated: {info['total_items']} items across "
+            f"{info['pages_fetched']} pages"
+        )
+        return all_items
+    return list(items)
+
+
 def create_paginated_response(
     items: List, response, fetch_all_used: bool = False, pagination_info: Optional[Dict] = None
 ) -> Dict[str, Any]:

@@ -83,7 +83,6 @@ _LOADING_VARIANTS = {e.value for e in LoadingPageTouchPointVariant}
 # list_brand_themes
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id")
 async def list_brand_themes(
     ctx: Context,
@@ -132,7 +131,6 @@ async def list_brand_themes(
 # get_brand_theme
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id", "theme_id")
 async def get_brand_theme(
     ctx: Context,
@@ -175,7 +173,6 @@ async def get_brand_theme(
 # replace_brand_theme
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id", "theme_id")
 async def replace_brand_theme(
     ctx: Context,
@@ -284,7 +281,6 @@ async def replace_brand_theme(
 # upload_brand_theme_logo
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id", "theme_id")
 async def upload_brand_theme_logo(
     ctx: Context,
@@ -340,7 +336,6 @@ async def upload_brand_theme_logo(
 # delete_brand_theme_logo
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id", "theme_id")
 async def delete_brand_theme_logo(
     ctx: Context,
@@ -398,7 +393,6 @@ async def delete_brand_theme_logo(
 # upload_brand_theme_favicon
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id", "theme_id")
 async def upload_brand_theme_favicon(
     ctx: Context,
@@ -452,7 +446,6 @@ async def upload_brand_theme_favicon(
 # delete_brand_theme_favicon
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id", "theme_id")
 async def delete_brand_theme_favicon(
     ctx: Context,
@@ -510,7 +503,6 @@ async def delete_brand_theme_favicon(
 # upload_brand_theme_background_image
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id", "theme_id")
 async def upload_brand_theme_background_image(
     ctx: Context,
@@ -566,7 +558,6 @@ async def upload_brand_theme_background_image(
 # delete_brand_theme_background_image
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 @validate_ids("brand_id", "theme_id")
 async def delete_brand_theme_background_image(
     ctx: Context,
@@ -620,3 +611,32 @@ async def delete_brand_theme_background_image(
     except Exception as e:
         logger.error(f"Exception while deleting background image for theme {theme_id}: {type(e).__name__}: {e}")
         return {"error": str(e)}
+
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    list_brand_themes,
+    get_brand_theme,
+    replace_brand_theme,
+    upload_brand_theme_logo,
+    delete_brand_theme_logo,
+    upload_brand_theme_favicon,
+    delete_brand_theme_favicon,
+    upload_brand_theme_background_image,
+    delete_brand_theme_background_image,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "list_brand_themes": list_brand_themes,
+    "get_brand_theme": get_brand_theme,
+    "replace_brand_theme": replace_brand_theme,
+}

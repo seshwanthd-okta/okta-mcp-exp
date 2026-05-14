@@ -132,6 +132,13 @@ async def elicit_or_fallback(
     -------
     ElicitationOutcome
     """
+    # Engine calls pass a lightweight SimpleNamespace with an _engine_mode
+    # flag instead of a real MCP Context.  In that case we always
+    # auto-confirm because the orchestrator handles approval at the plan level.
+    if getattr(ctx, "_engine_mode", False) is True:
+        logger.info("Engine mode detected — auto-confirming")
+        return ElicitationOutcome(confirmed=True, used_elicitation=False)
+
     if not supports_elicitation(ctx):
         if auto_confirm_on_fallback:
             logger.info("Client does not support elicitation — auto-confirming (pre-elicitation behaviour)")

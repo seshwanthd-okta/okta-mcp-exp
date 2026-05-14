@@ -5,6 +5,7 @@
 # Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and limitations under the License.
 
+import json
 import re
 from typing import Any, Dict, List, Optional
 
@@ -164,7 +165,6 @@ def _get_implication(attr: str, before: Any, after: Any) -> str:
     return f"The '{attr}' setting has been modified."
 
 
-@mcp.tool()
 async def list_device_assurance_policies(ctx: Context) -> Dict[str, Any]:
     """List all Device Assurance Policies in the Okta organization.
 
@@ -184,7 +184,31 @@ async def list_device_assurance_policies(ctx: Context) -> Dict[str, Any]:
 
     try:
         okta_client = await get_okta_client(manager)
-        policies, _, err = await okta_client.list_device_assurance_policies()
+        try:
+            policies, _, err = await okta_client.list_device_assurance_policies()
+        except Exception:
+            # SDK deserialization may fail (e.g. GracePeriodExpiry oneOf bug).
+            # Fall back to a raw HTTP request and return the JSON directly.
+            logger.warning("SDK deserialization failed, falling back to raw API call")
+            req_exec = okta_client.get_request_executor()
+            request, err = await req_exec.create_request(
+                "GET", "/api/v1/device-assurances", None, {}, {}
+            )
+            if err:
+                return {"error": str(err)}
+            _, res_details, resp_body, err = await req_exec.fire_request(request)
+            if err:
+                return {"error": str(err)}
+            raw_policies = json.loads(resp_body) if isinstance(resp_body, str) else resp_body
+            if not isinstance(raw_policies, list):
+                return {"error": f"Unexpected response format: {type(raw_policies)}"}
+            logger.info(f"Successfully retrieved {len(raw_policies)} device assurance policy(ies) (raw)")
+            return {
+                "policies": [
+                    _enrich_policy_with_attribute_status(p) if isinstance(p, dict) else p
+                    for p in raw_policies
+                ]
+            }
 
         if err:
             logger.error(f"Error listing device assurance policies: {err}")
@@ -207,7 +231,6 @@ async def list_device_assurance_policies(ctx: Context) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("device_assurance_id", error_return_type="dict")
 async def get_device_assurance_policy(
     ctx: Context, device_assurance_id: str
@@ -245,7 +268,6 @@ async def get_device_assurance_policy(
         return {"error": str(e)}
 
 
-@mcp.tool()
 async def create_device_assurance_policy(
     ctx: Context, policy_data: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
@@ -302,7 +324,6 @@ async def create_device_assurance_policy(
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("device_assurance_id", error_return_type="dict")
 async def replace_device_assurance_policy(
     ctx: Context, device_assurance_id: str, policy_data: Dict[str, Any]
@@ -401,7 +422,6 @@ async def replace_device_assurance_policy(
         return {"error": str(e)}
 
 
-@mcp.tool()
 @validate_ids("device_assurance_id", error_return_type="dict")
 async def delete_device_assurance_policy(
     ctx: Context, device_assurance_id: str
@@ -451,3 +471,30 @@ async def delete_device_assurance_policy(
     except Exception as e:
         logger.error(f"Exception deleting device assurance policy {device_assurance_id}: {e}")
         return {"error": str(e)}
+
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    list_device_assurance_policies,
+    get_device_assurance_policy,
+    create_device_assurance_policy,
+    replace_device_assurance_policy,
+    delete_device_assurance_policy,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "list_device_assurance_policies": list_device_assurance_policies,
+    "get_device_assurance_policy": get_device_assurance_policy,
+    "create_device_assurance_policy": create_device_assurance_policy,
+    "replace_device_assurance_policy": replace_device_assurance_policy,
+    "delete_device_assurance_policy": delete_device_assurance_policy,
+}

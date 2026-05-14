@@ -18,7 +18,6 @@ from okta_mcp_server.utils.pagination import build_query_params, create_paginate
 from okta_mcp_server.utils.validation import validate_ids
 
 
-@mcp.tool()
 async def list_groups(
     ctx: Context,
     search: str = "",
@@ -105,7 +104,6 @@ async def list_groups(
         return {"error": f"Exception: {e}"}
 
 
-@mcp.tool()
 @validate_ids("group_id")
 async def get_group(group_id: str, ctx: Context = None) -> list:
     """Get a group by ID from the Okta organization
@@ -139,7 +137,6 @@ async def get_group(group_id: str, ctx: Context = None) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 async def create_group(profile: dict, ctx: Context = None) -> list:
     """Create a group in the Okta organization.
 
@@ -176,7 +173,6 @@ async def create_group(profile: dict, ctx: Context = None) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("group_id")
 async def delete_group(group_id: str, ctx: Context = None) -> list:
     """Delete a group by ID from the Okta organization.
@@ -238,7 +234,6 @@ async def delete_group(group_id: str, ctx: Context = None) -> list:
         return [{"error": f"Exception: {e}"}]
 
 
-@mcp.tool()
 @validate_ids("group_id")
 async def confirm_delete_group(group_id: str, confirmation: str, ctx: Context = None) -> list:
     """Confirm and execute group deletion after receiving confirmation.
@@ -284,7 +279,6 @@ async def confirm_delete_group(group_id: str, confirmation: str, ctx: Context = 
         return [{"error": str(e)}]
 
 
-@mcp.tool()
 @validate_ids("group_id")
 async def update_group(group_id: str, profile: dict, ctx: Context = None) -> list:
     """Update a group by ID in the Okta organization.
@@ -321,7 +315,6 @@ async def update_group(group_id: str, profile: dict, ctx: Context = None) -> lis
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("group_id", error_return_type="dict")
 async def list_group_users(
     group_id: str,
@@ -402,7 +395,6 @@ async def list_group_users(
         return {"error": f"Exception: {e}"}
 
 
-@mcp.tool()
 @validate_ids("group_id")
 async def list_group_apps(group_id: str, ctx: Context = None) -> list:
     """List all applications in a group by ID from the Okta organization.
@@ -438,7 +430,6 @@ async def list_group_apps(group_id: str, ctx: Context = None) -> list:
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("group_id", "user_id")
 async def add_user_to_group(group_id: str, user_id: str, ctx: Context = None) -> list:
     """Add a user to a group by ID in the Okta organization.
@@ -474,7 +465,6 @@ async def add_user_to_group(group_id: str, user_id: str, ctx: Context = None) ->
         return [f"Exception: {e}"]
 
 
-@mcp.tool()
 @validate_ids("group_id", "user_id")
 async def remove_user_from_group(group_id: str, user_id: str, ctx: Context = None) -> list:
     """Remove a user from a group by ID in the Okta organization.
@@ -508,3 +498,39 @@ async def remove_user_from_group(group_id: str, user_id: str, ctx: Context = Non
     except Exception as e:
         logger.error(f"Exception while removing user {user_id} from group {group_id}: {type(e).__name__}: {e}")
         return [f"Exception: {e}"]
+
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    list_groups,
+    get_group,
+    create_group,
+    delete_group,
+    confirm_delete_group,
+    update_group,
+    list_group_users,
+    list_group_apps,
+    add_user_to_group,
+    remove_user_from_group,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "list_groups": list_groups,
+    "get_group": get_group,
+    "create_group": create_group,
+    "update_group": update_group,
+    "delete_group": delete_group,
+    "list_group_users": list_group_users,
+    "list_group_apps": list_group_apps,
+    "add_user_to_group": add_user_to_group,
+    "remove_user_from_group": remove_user_from_group,
+}

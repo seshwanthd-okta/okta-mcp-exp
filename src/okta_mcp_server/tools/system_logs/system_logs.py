@@ -15,7 +15,6 @@ from okta_mcp_server.utils.client import get_okta_client
 from okta_mcp_server.utils.pagination import build_query_params, create_paginated_response, paginate_all_results
 
 
-@mcp.tool()
 async def get_logs(
     ctx: Context = None,
     fetch_all: bool = False,
@@ -107,3 +106,22 @@ async def get_logs(
     except Exception as e:
         logger.error(f"Exception while retrieving system logs: {type(e).__name__}: {e}")
         return {"error": f"Exception: {e}"}
+
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration
+# ---------------------------------------------------------------------------
+
+for _fn in [
+    get_logs,
+]:
+    mcp.tool()(_fn)
+
+# ---------------------------------------------------------------------------
+# Engine action registry — maps action names to functions for the orchestrator
+# ---------------------------------------------------------------------------
+
+ENGINE_ACTIONS = {
+    "get_logs": get_logs,
+}

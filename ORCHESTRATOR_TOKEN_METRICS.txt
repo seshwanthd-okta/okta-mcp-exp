@@ -1,0 +1,92 @@
+================================================================================
+  OKTA MCP SERVER — ORCHESTRATOR TOOL DEFINITION TOKEN COST METRICS
+  Estimated via docstring + parameter analysis (GPT-4 / cl100k_base tokenizer)
+  Generated: 2026-03-31
+================================================================================
+
+Notes:
+  - Token counts are approximate (1 token ≈ 4 chars / 0.75 words).
+  - "Schema tokens" = full JSON function-calling schema sent to the LLM:
+      { name, description, parameters: { type, properties, required } }
+  - Parameter descriptions are taken from each tool's docstring "Parameters:"
+    block; all params are typed as "string" for schema purposes.
+  - ctx (MCP Context) is injected server-side and NOT counted.
+
+--------------------------------------------------------------------------------
+PER-TOOL BREAKDOWN
+--------------------------------------------------------------------------------
+
+Tool: orchestrator_query
+  Category        : orchestrator
+  Param count     : 4  (action, target_type, target_identifier, intent)
+  Required params : 3  (action, target_type, target_identifier)
+  Optional params : 1  (intent)
+
+  Token estimates:
+    name tokens          :   3
+    description tokens   : 300   (23-line docstring incl. Parameters/Returns/Example)
+    params tokens        :  70   (4 × name + type + inline desc)
+    JSON struct overhead :  40
+    ─────────────────────────
+    SCHEMA TOTAL         : 413
+
+Tool: orchestrator_execute
+  Category        : orchestrator
+  Param count     : 1  (plan_id)
+  Required params : 1  (plan_id)
+  Optional params : 0
+
+  Token estimates:
+    name tokens          :   4
+    description tokens   : 110   (14-line docstring incl. Parameters/Returns)
+    params tokens        :  20   (1 × name + type + inline desc)
+    JSON struct overhead :  30
+    ─────────────────────────
+    SCHEMA TOTAL         : 164
+
+Tool: orchestrator_context
+  Category        : orchestrator
+  Param count     : 0  (no user-visible params; ctx is injected)
+  Required params : 0
+  Optional params : 0
+
+  Token estimates:
+    name tokens          :   4
+    description tokens   :  90   (11-line docstring incl. Returns/hint)
+    params tokens        :   0
+    JSON struct overhead :  25
+    ─────────────────────────
+    SCHEMA TOTAL         : 119
+
+--------------------------------------------------------------------------------
+PER-CATEGORY SUMMARY
+--------------------------------------------------------------------------------
+
+Category        | Tools | Total Schema Tokens | Total Params
+----------------|-------|---------------------|-------------
+orchestrator    |     3 |                 696 |            5
+
+--------------------------------------------------------------------------------
+GRAND TOTAL
+--------------------------------------------------------------------------------
+
+  Total tools           :    3
+  Total schema tokens   :  696
+  Total params          :    5
+  Avg tokens / tool     :  232
+  Avg params / tool     :  1.7
+
+--------------------------------------------------------------------------------
+WORKFLOW REGISTRY (at time of measurement)
+--------------------------------------------------------------------------------
+
+  Workflow       Action    Target   Steps  Destructive Steps  Required Scopes
+  ─────────────────────────────────────────────────────────────────────────────
+  offboard_user  offboard  user     5      2 (deactivate,     okta.users.manage
+                                            remove_from_group) okta.groups.manage
+
+  Engine actions dispatched internally (not exposed as MCP tools):
+    list_users, get_user, deactivate_user,
+    list_user_groups, remove_user_from_group, list_user_app_assignments
+
+================================================================================
