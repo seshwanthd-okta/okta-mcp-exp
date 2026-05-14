@@ -417,11 +417,15 @@ async def orchestrator_context(ctx: Context) -> dict:
     - Retrieve results from previously executed plans.
     - See which plans are still pending execution.
     - Answer follow-up questions without calling the Okta API again.
+    - Look up the predicate reference and goal names before calling
+      orchestrator_plan_for_goal.
 
     No parameters — returns everything about the current session.
 
     Returns:
-        Dict with session data, active plans, and graph capabilities.
+        Dict with session data, active plans, graph capabilities, and the
+        full planning reference (predefined goals, predicate catalog, and
+        usage examples for orchestrator_plan_for_goal).
     """
     logger.info("orchestrator_context invoked")
 
@@ -434,11 +438,337 @@ async def orchestrator_context(ctx: Context) -> dict:
         if p.status in (PlanStatus.DRAFT, PlanStatus.AWAITING_APPROVAL)
     ]
 
+    planning_reference = (
+        "── ORCHESTRATOR WORKFLOW ──\n"
+        "\n"
+        "1. Call orchestrator_context (this tool) — discover available predicates and predefined goals.\n"
+        "2. Call orchestrator_plan_for_goal — describe WHAT you want (goal), the solver figures out HOW.\n"
+        "3. Call orchestrator_execute(plan_id=...) — run the plan.\n"
+        "\n"
+        "── PREDEFINED GOALS ──\n"
+        "\n"
+        "Pass these as goal_state predicates to orchestrator_plan_for_goal:\n"
+        "\n"
+        "  offboard_user          — Audit apps → revoke groups → clear sessions → deactivate\n"
+        "  suspend_user           — Clear sessions → suspend account\n"
+        "  onboard_user           — Create user → add to group → activate\n"
+        "  audit_user             — Profile + apps + groups + system logs\n"
+        "  rotate_user_credentials — Clear all sessions (force re-auth)\n"
+        "  create_group           — Create a new group\n"
+        "  audit_group            — Look up group → list members + apps\n"
+        "  add_user_to_group      — Resolve user + group → add membership\n"
+        "  list_groups            — List all groups\n"
+        "  cleanup_group          — Look up group → delete\n"
+        "  setup_brand            — List brands → get brand → list themes\n"
+        "  configure_custom_domain — Create → verify → add certificate\n"
+        "  configure_email_domain — Create → verify\n"
+        "  setup_device_assurance_policy — Create policy → list policies\n"
+        "\n"
+        "── HOW TO BUILD A CUSTOM goal_state ──\n"
+        "\n"
+        "1. Identify what you want to be true when the workflow finishes.\n"
+        "2. Express each desired outcome as 'entity.property=VALUE'.\n"
+        "3. Combine them with commas.\n"
+        "4. Optionally set initial_state to tell the solver what is already true.\n"
+        "\n"
+        "The solver works BACKWARD from your goal: it finds which tools produce each predicate\n"
+        "(via their effects), adds those tools, then resolves their preconditions as sub-goals,\n"
+        "repeating until all predicates are satisfied by the initial state or tool effects.\n"
+        "\n"
+        "Example thought process:\n"
+        "  'I want to deactivate a user and revoke their sessions'\n"
+        "  → goal_state = 'user.status=DEACTIVATED,user.sessions=REVOKED'\n"
+        "  → initial_state = 'user.identifier=PROVIDED' (I have their email)\n"
+        "  → solver finds: get_user → clear_user_sessions → deactivate_user\n"
+        "\n"
+        "── STATE PREDICATE REFERENCE ──\n"
+        "\n"
+        "Predicates use the format 'entity.property=VALUE'.\n"
+        "\n"
+        "Value semantics:\n"
+        "  PROVIDED — the caller supplies this input data\n"
+        "  KNOWN — the system has resolved/fetched this (ID, profile, status)\n"
+        "  ENUMERATED — a list/collection has been fetched\n"
+        "  AUDITED — assignments have been listed for review\n"
+        "  RETRIEVED — log events have been fetched\n"
+        "  CREATED — entity was just created\n"
+        "  ACTIVE — entity has been activated\n"
+        "  SUSPENDED — user account suspended (reversible)\n"
+        "  DEACTIVATED — entity has been deactivated (irreversible without reactivation)\n"
+        "  DELETED — entity has been deleted\n"
+        "  UPDATED — entity profile/config has been modified\n"
+        "  REVOKED — sessions cleared or group memberships removed\n"
+        "  GRANTED — group membership added\n"
+        "  VERIFIED — domain has been verified\n"
+        "  CONFIGURED — certificate/setting has been configured\n"
+        "  UPLOADED — file (logo/favicon/background) has been uploaded\n"
+        "  SENT — test email has been sent\n"
+        "\n"
+        "── Available predicates by entity ──\n"
+        "\n"
+        "USER predicates:\n"
+        "  user.identifier=PROVIDED — input: you have a user email/login/ID\n"
+        "  user.profile_data=PROVIDED — input: you have profile data for user creation\n"
+        "  user.id=KNOWN — resolved by: get_user\n"
+        "  user.profile=KNOWN — resolved by: get_user\n"
+        "  user.profile=UPDATED — resolved by: update_user\n"
+        "  user.status=KNOWN — resolved by: get_user\n"
+        "  user.status=CREATED — resolved by: create_user\n"
+        "  user.status=ACTIVE — resolved by: activate_user / reactivate_user / unlock_user\n"
+        "  user.status=SUSPENDED — resolved by: suspend_user\n"
+        "  user.status=DEACTIVATED — resolved by: deactivate_user\n"
+        "  user.status=DELETED — resolved by: delete_user\n"
+        "  user.list=KNOWN — resolved by: list_users\n"
+        "  user.apps=AUDITED — resolved by: list_user_app_assignments\n"
+        "  user.groups=ENUMERATED — resolved by: list_user_groups\n"
+        "  user.group_membership=GRANTED — resolved by: add_user_to_group\n"
+        "  user.group_memberships=REVOKED — resolved by: remove_user_from_group\n"
+        "  user.sessions=REVOKED — resolved by: clear_user_sessions\n"
+        "  user.schema=KNOWN — resolved by: get_user_profile_attributes\n"
+        "\n"
+        "GROUP predicates:\n"
+        "  group.identifier=PROVIDED — input: you have a group name/ID\n"
+        "  group.profile_data=PROVIDED — input: you have group profile data\n"
+        "  group.id=KNOWN — resolved by: get_group\n"
+        "  group.profile=KNOWN — resolved by: get_group\n"
+        "  group.profile=UPDATED — resolved by: update_group\n"
+        "  group.status=CREATED — resolved by: create_group\n"
+        "  group.status=DELETED — resolved by: delete_group\n"
+        "  group.list=KNOWN — resolved by: list_groups\n"
+        "  group.users=ENUMERATED — resolved by: list_group_users\n"
+        "  group.apps=ENUMERATED — resolved by: list_group_apps\n"
+        "\n"
+        "APPLICATION predicates:\n"
+        "  application.identifier=PROVIDED — input: you have an app ID\n"
+        "  application.id=KNOWN — resolved by: get_application\n"
+        "  application.profile=KNOWN — resolved by: get_application\n"
+        "  application.profile=UPDATED — resolved by: update_application\n"
+        "  application.status=CREATED — resolved by: create_application\n"
+        "  application.status=ACTIVE — resolved by: activate_application\n"
+        "  application.status=DEACTIVATED — resolved by: deactivate_application\n"
+        "  application.status=DELETED — resolved by: delete_application\n"
+        "  application.list=KNOWN — resolved by: list_applications\n"
+        "\n"
+        "POLICY predicates:\n"
+        "  policy.identifier=PROVIDED — input: you have a policy ID\n"
+        "  policy.id=KNOWN — resolved by: get_policy\n"
+        "  policy.profile=KNOWN — resolved by: get_policy\n"
+        "  policy.profile=UPDATED — resolved by: update_policy\n"
+        "  policy.status=CREATED — resolved by: create_policy\n"
+        "  policy.status=ACTIVE — resolved by: activate_policy\n"
+        "  policy.status=DEACTIVATED — resolved by: deactivate_policy\n"
+        "  policy.status=DELETED — resolved by: delete_policy\n"
+        "  policy.list=KNOWN — resolved by: list_policies\n"
+        "  policy.rules=ENUMERATED — resolved by: list_policy_rules\n"
+        "  policy_rule.id=KNOWN — resolved by: get_policy_rule\n"
+        "  policy_rule.profile=KNOWN — resolved by: get_policy_rule\n"
+        "  policy_rule.profile=UPDATED — resolved by: update_policy_rule\n"
+        "  policy_rule.status=CREATED — resolved by: create_policy_rule\n"
+        "  policy_rule.status=ACTIVE — resolved by: activate_policy_rule\n"
+        "  policy_rule.status=DEACTIVATED — resolved by: deactivate_policy_rule\n"
+        "  policy_rule.status=DELETED — resolved by: delete_policy_rule\n"
+        "\n"
+        "BRAND / THEME predicates:\n"
+        "  brand.identifier=PROVIDED — input: you have a brand ID\n"
+        "  brand.id=KNOWN — resolved by: get_brand\n"
+        "  brand.profile=KNOWN — resolved by: get_brand\n"
+        "  brand.profile=UPDATED — resolved by: update_brand\n"
+        "  brand.status=CREATED — resolved by: create_brand\n"
+        "  brand.status=DELETED — resolved by: delete_brand\n"
+        "  brand.list=KNOWN — resolved by: list_brands\n"
+        "  brand.domains=ENUMERATED — resolved by: list_brand_domains\n"
+        "  theme.id=KNOWN — resolved by: get_brand_theme\n"
+        "  theme.profile=KNOWN — resolved by: get_brand_theme\n"
+        "  theme.profile=UPDATED — resolved by: replace_brand_theme\n"
+        "  theme.list=KNOWN — resolved by: list_brand_themes\n"
+        "  theme.logo=UPLOADED — resolved by: upload_brand_theme_logo\n"
+        "  theme.logo=DELETED — resolved by: delete_brand_theme_logo\n"
+        "  theme.favicon=UPLOADED — resolved by: upload_brand_theme_favicon\n"
+        "  theme.favicon=DELETED — resolved by: delete_brand_theme_favicon\n"
+        "  theme.background=UPLOADED — resolved by: upload_brand_theme_background\n"
+        "\n"
+        "CUSTOM DOMAIN predicates:\n"
+        "  custom_domain.data=PROVIDED — input: domain configuration data\n"
+        "  custom_domain.certificate_data=PROVIDED — input: certificate data\n"
+        "  custom_domain.id=KNOWN — resolved by: get_custom_domain / create\n"
+        "  custom_domain.profile=KNOWN — resolved by: get_custom_domain\n"
+        "  custom_domain.profile=UPDATED — resolved by: update_custom_domain\n"
+        "  custom_domain.status=CREATED — resolved by: create_custom_domain\n"
+        "  custom_domain.status=VERIFIED — resolved by: verify_custom_domain\n"
+        "  custom_domain.status=DELETED — resolved by: delete_custom_domain\n"
+        "  custom_domain.list=KNOWN — resolved by: list_custom_domains\n"
+        "  custom_domain.certificate=CONFIGURED — resolved by: upsert_custom_domain_certificate\n"
+        "\n"
+        "CUSTOM PAGE predicates:\n"
+        "  custom_page.sign_in_page=KNOWN|UPDATED|DELETED\n"
+        "  custom_page.sign_in_page_default=KNOWN\n"
+        "  custom_page.sign_in_page_preview=KNOWN|UPDATED|DELETED\n"
+        "  custom_page.sign_in_page_resources=KNOWN\n"
+        "  custom_page.error_page=KNOWN|UPDATED|DELETED\n"
+        "  custom_page.error_page_default=KNOWN\n"
+        "  custom_page.error_page_preview=KNOWN|UPDATED|DELETED\n"
+        "  custom_page.error_page_resources=KNOWN\n"
+        "  custom_page.sign_out_settings=KNOWN|UPDATED\n"
+        "  custom_page.widget_versions=KNOWN\n"
+        "\n"
+        "EMAIL DOMAIN predicates:\n"
+        "  email_domain.data=PROVIDED — input: email domain config\n"
+        "  email_domain.id=KNOWN — resolved by: get_email_domain / create\n"
+        "  email_domain.profile=KNOWN — resolved by: get_email_domain\n"
+        "  email_domain.profile=UPDATED — resolved by: update_email_domain\n"
+        "  email_domain.status=CREATED — resolved by: create_email_domain\n"
+        "  email_domain.status=VERIFIED — resolved by: verify_email_domain\n"
+        "  email_domain.status=DELETED — resolved by: delete_email_domain\n"
+        "  email_domain.list=KNOWN — resolved by: list_email_domains\n"
+        "\n"
+        "EMAIL TEMPLATE predicates:\n"
+        "  email_template.id=KNOWN — resolved by: get_email_template\n"
+        "  email_template.profile=KNOWN — resolved by: get_email_template\n"
+        "  email_template.list=KNOWN — resolved by: list_email_templates\n"
+        "  email_template.settings=KNOWN|UPDATED\n"
+        "  email_template.default_content=KNOWN\n"
+        "  email_template.default_content_preview=KNOWN\n"
+        "  email_template.customization_id=KNOWN\n"
+        "  email_template.customization=CREATED|DELETED\n"
+        "  email_template.customization_profile=KNOWN|UPDATED\n"
+        "  email_template.customization_preview=KNOWN\n"
+        "  email_template.customizations=ENUMERATED|DELETED\n"
+        "  email_template.test_email=SENT\n"
+        "\n"
+        "DEVICE ASSURANCE predicates:\n"
+        "  device_assurance.data=PROVIDED — input: device assurance policy data\n"
+        "  device_assurance.id=KNOWN — resolved by: get / create\n"
+        "  device_assurance.profile=KNOWN — resolved by: get\n"
+        "  device_assurance.profile=UPDATED — resolved by: update\n"
+        "  device_assurance.status=CREATED — resolved by: create\n"
+        "  device_assurance.status=DELETED — resolved by: delete\n"
+        "  device_assurance.list=KNOWN — resolved by: list\n"
+        "\n"
+        "SYSTEM LOG predicates:\n"
+        "  log.events=RETRIEVED — resolved by: get_logs (no preconditions)\n"
+        "\n"
+        "── PARAMETER GUIDE FOR orchestrator_plan_for_goal ──\n"
+        "\n"
+        "Parameters:\n"
+        "  goal_state (str, required): Ad-hoc goal as comma-separated predicates.\n"
+        "    Each predicate is 'entity.property=VALUE' from the reference above.\n"
+        "    The solver finds actions whose effects produce these predicates and\n"
+        "    chains them together automatically.\n"
+        "\n"
+        "    Simple examples:\n"
+        "      'user.status=DEACTIVATED'\n"
+        "      'user.list=KNOWN'\n"
+        "      'log.events=RETRIEVED'\n"
+        "      'group.status=DELETED'\n"
+        "      'application.list=KNOWN'\n"
+        "\n"
+        "    Composite examples (multiple predicates = multi-step workflow):\n"
+        "      'user.status=DEACTIVATED,user.sessions=REVOKED'\n"
+        "      'user.status=DEACTIVATED,user.group_memberships=REVOKED,user.sessions=REVOKED'\n"
+        "      'brand.list=KNOWN,theme.list=KNOWN'\n"
+        "      'custom_domain.status=VERIFIED,custom_domain.certificate=CONFIGURED'\n"
+        "      'group.id=KNOWN,group.users=ENUMERATED,group.apps=ENUMERATED'\n"
+        "      'user.id=KNOWN,user.apps=AUDITED,user.groups=ENUMERATED,log.events=RETRIEVED'\n"
+        "\n"
+        "  initial_state (str, optional): Override initial state assumptions.\n"
+        "    Tells the solver what is already known before planning starts.\n"
+        "    Format: 'entity.property=VALUE,...'\n"
+        "\n"
+        "    Common patterns:\n"
+        "      'user.identifier=PROVIDED'       — you have a user email/login/ID\n"
+        "      'group.identifier=PROVIDED'      — you have a group name/ID\n"
+        "      'user.id=KNOWN'                  — user ID already resolved\n"
+        "      'group.id=KNOWN'                 — group ID already resolved\n"
+        "      'brand.identifier=PROVIDED'      — you have a brand ID\n"
+        "      'user.identifier=PROVIDED,group.identifier=PROVIDED'  — both available\n"
+        "\n"
+        "    Usually not needed for predefined goals (they include sensible defaults).\n"
+        "    REQUIRED for ad-hoc goal_state when the workflow needs input data.\n"
+        "\n"
+        "  target_identifier (str, optional): The primary identifier for the target\n"
+        "    entity (e.g. user email, group name, brand ID).\n"
+        "    Only needed when the first action in the plan requires an input\n"
+        "    identifier (e.g. get_user needs a user_id).  For actions that\n"
+        "    don't need an identifier (e.g. list_brands, list_groups, get_logs),\n"
+        "    this can be omitted entirely.\n"
+        "\n"
+        "  extra_params (str, optional): Additional static params as 'key=value,key=value'.\n"
+        "    Distributed to every step so each handler can pick up what it needs.\n"
+        "    Use @action_name:key=value to target a specific step.\n"
+        "    Examples:\n"
+        "      'name=Engineering'           — for get_group (search by name)\n"
+        "      'send_email=true'            — for activate_user\n"
+        "      'q=search_term'              — for list_users / list_groups\n"
+        "\n"
+        "IMPORTANT: orchestrator_plan_for_goal does NOT accept a 'context' dict parameter.\n"
+        "Passing a JSON object like {'context': {'group_name': '...'}} will be silently ignored.\n"
+        "When a workflow involves MULTIPLE entities (e.g. a user AND a group),\n"
+        "provide the secondary identifier via extra_params, NOT context:\n"
+        "\n"
+        "  WRONG:\n"
+        "    orchestrator_plan_for_goal(\n"
+        "      goal_name='add_user_to_group',\n"
+        "      target_identifier='john@acme.com',\n"
+        "      context={'group_name': 'TestGroup'}   ← IGNORED\n"
+        "    )\n"
+        "\n"
+        "  CORRECT:\n"
+        "    orchestrator_plan_for_goal(\n"
+        "      goal_name='add_user_to_group',\n"
+        "      target_identifier='john@acme.com',\n"
+        "      extra_params='name=TestGroup'         ← wired to get_group\n"
+        "    )\n"
+        "\n"
+        "The target_identifier feeds the FIRST step's required params (e.g. user lookup).\n"
+        "Any additional identifiers for later steps (group name, app ID, policy ID, etc.)\n"
+        "must go through extra_params as 'key=value' pairs.\n"
+        "\n"
+        "── USAGE EXAMPLES ──\n"
+        "\n"
+        "  # Predefined goal — offboard a user\n"
+        "  orchestrator_plan_for_goal(goal_name='offboard_user', target_identifier='john@acme.com')\n"
+        "\n"
+        "  # Ad-hoc goal — just deactivate and clear sessions\n"
+        "  orchestrator_plan_for_goal(\n"
+        "    goal_state='user.status=DEACTIVATED,user.sessions=REVOKED',\n"
+        "    initial_state='user.identifier=PROVIDED',\n"
+        "    target_identifier='jane@acme.com')\n"
+        "\n"
+        "  # Ad-hoc goal — audit a user's apps and groups\n"
+        "  orchestrator_plan_for_goal(\n"
+        "    goal_state='user.id=KNOWN,user.apps=AUDITED,user.groups=ENUMERATED',\n"
+        "    initial_state='user.identifier=PROVIDED',\n"
+        "    target_identifier='bob@acme.com')\n"
+        "\n"
+        "  # Ad-hoc goal — get system logs (no target entity needed)\n"
+        "  orchestrator_plan_for_goal(goal_state='log.events=RETRIEVED')\n"
+        "\n"
+        "  # Ad-hoc goal — set up a brand with themes\n"
+        "  orchestrator_plan_for_goal(\n"
+        "    goal_state='brand.list=KNOWN,brand.id=KNOWN,theme.list=KNOWN',\n"
+        "    initial_state='brand.identifier=PROVIDED',\n"
+        "    target_identifier='my-brand-id')\n"
+        "\n"
+        "  # Ad-hoc goal — create a user, add to a group, and activate\n"
+        "  orchestrator_plan_for_goal(\n"
+        "    goal_state='user.status=ACTIVE,user.group_membership=GRANTED',\n"
+        "    initial_state='user.profile_data=PROVIDED,group.identifier=PROVIDED',\n"
+        "    target_identifier='newuser@acme.com',\n"
+        "    extra_params='group_name=Engineering')\n"
+        "\n"
+        "  # Discover available goals\n"
+        "  orchestrator_plan_for_goal()\n"
+    )
+
     return {
         "session": session.to_dict(),
         "active_plans": active_plans,
         "graph_stats": kg.get_stats(),
+        "planning_reference": planning_reference,
         "hint": (
+            "The 'planning_reference' field above contains the full predicate catalog, "
+            "predefined goal names, parameter guide, and usage examples for "
+            "orchestrator_plan_for_goal. "
             "To start a new workflow, call orchestrator_plan_for_goal() with a "
             "goal_state and target_identifier. "
             "To run a pending plan, call orchestrator_execute(plan_id='...')."
@@ -456,149 +786,48 @@ async def orchestrator_plan_for_goal(
 ) -> dict:
     """Plan an Okta workflow using the CSP constraint solver.
 
-    PRIMARY ENTRY POINT for multi-step Okta ops. Builds a plan only —
-    call orchestrator_execute(plan_id=...) to run it. The solver works
-    backward from your goal, finding the minimal action sequence automatically.
+    THIS IS THE PRIMARY ENTRY POINT for all multi-step Okta operations.
+    Do NOT try to determine the correct API call sequence yourself — describe
+    your desired end-state and let the solver find the optimal plan.
 
-    PARAMETERS
-      goal_state:        "entity.property=VALUE,..." — desired end-state predicates
-      initial_state:     what is already known/provided (often auto-inferred)
-      target_identifier: primary entity email/ID/name (feeds the first step)
-      extra_params:      "key=value,..." broadcast to all steps
+    This tool ONLY builds a plan.  To execute it, take the plan_id from the
+    response and call orchestrator_execute(plan_id=...).
 
-    PREDICATES — USER
-      user.identifier=PROVIDED | user.profile_data=PROVIDED
-      user.id=KNOWN | user.profile=KNOWN|UPDATED | user.schema=KNOWN
-      user.status=KNOWN|CREATED|ACTIVE|SUSPENDED|DEACTIVATED|DELETED|PROVISIONED|UNLOCKED
-      user.list=KNOWN | user.apps=AUDITED | user.groups=ENUMERATED
-      user.group_membership=GRANTED | user.group_memberships=REVOKED | user.sessions=REVOKED
-      user.password=EXPIRED|CHANGED|RESET | user.temp_password=KNOWN | user.reset_url=KNOWN
-      user.recovery_question=CHANGED | user.password_reset=INITIATED
-      user.factors=ENUMERATED|RESET | user.blocks=ENUMERATED | user.clients=ENUMERATED
-      user.devices=ENUMERATED | user.grants=ENUMERATED|REVOKED
-      user.refresh_tokens=ENUMERATED|REVOKED | user.risk_level=KNOWN|UPDATED
-      user.classification=KNOWN|UPDATED | user.linked_objects=ENUMERATED
-      user.authenticator_enrollments=ENUMERATED
-      factor.id=KNOWN|DELETED | factor.status=KNOWN
-      user_grant.id=KNOWN|REVOKED | user_type.list=KNOWN | user_type.id=KNOWN|DELETED
+    Call orchestrator_context() first to see the full predicate reference,
+    predefined goal names, initial_state patterns, and usage examples.
 
-    PREDICATES — GROUP
-      group.identifier=PROVIDED | group.profile_data=PROVIDED
-      group.id=KNOWN | group.profile=KNOWN|UPDATED
-      group.status=CREATED|DELETED | group.list=KNOWN
-      group.users=ENUMERATED | group.apps=ENUMERATED
-      group.owners=ENUMERATED | group.owner=ASSIGNED|REMOVED
-      group_rule.list=KNOWN | group_rule.id=KNOWN|DELETED
-      group_rule.status=KNOWN|ACTIVE|INACTIVE | group_rule.profile=UPDATED
+    How it works:
+        1. You provide a goal (the desired end-state as predicates).
+        2. The solver searches the knowledge graph and finds the minimal
+           ordered action sequence that reaches that goal state.
+        3. A plan is built with automatic parameter wiring and returned
+           with a plan_id.
+        4. Call orchestrator_execute(plan_id=...) to run it.
 
-    PREDICATES — APP
-      application.identifier=PROVIDED | application.id=KNOWN
-      application.profile=KNOWN|UPDATED
-      application.status=CREATED|ACTIVE|DEACTIVATED|DELETED | application.list=KNOWN
+    Parameters:
+        goal_state (str, required): Comma-separated predicates describing the
+            desired end-state.  Format: "entity.property=VALUE,..."
+            Example: "user.status=DEACTIVATED,user.sessions=REVOKED"
 
-    PREDICATES — POLICY
-      policy.identifier=PROVIDED | policy.id=KNOWN | policy.profile=KNOWN|UPDATED
-      policy.status=CREATED|ACTIVE|DEACTIVATED|DELETED | policy.list=KNOWN
-      policy.rules=ENUMERATED | policy.simulation_result=KNOWN | policy.apps=ENUMERATED
-      policy.cloned_id=KNOWN | policy.resource_mappings=ENUMERATED | policy.resource_mapping=CREATED
-      policy_rule.id=KNOWN|DELETED | policy_rule.profile=KNOWN|UPDATED
-      policy_rule.status=CREATED|ACTIVE|DEACTIVATED|DELETED
+        initial_state (str, optional): What is already true before planning.
+            Format: "entity.property=VALUE,..."
+            Example: "user.identifier=PROVIDED"
 
-    PREDICATES — BRAND / THEME
-      brand.identifier=PROVIDED | brand.id=KNOWN | brand.profile=KNOWN|UPDATED
-      brand.status=CREATED|DELETED | brand.list=KNOWN | brand.domains=ENUMERATED
-      theme.id=KNOWN | theme.profile=KNOWN|UPDATED | theme.list=KNOWN
-      theme.logo=UPLOADED|DELETED | theme.favicon=UPLOADED|DELETED | theme.background=UPLOADED
+        target_identifier (str, optional): Primary identifier for the target
+            entity (e.g. user email, group name).  Feeds the first step's
+            required params.  Omit for actions that don't need one (e.g.
+            list_groups, get_logs).
 
-    PREDICATES — CUSTOM DOMAIN / EMAIL DOMAIN
-      custom_domain.data=PROVIDED | custom_domain.certificate_data=PROVIDED
-      custom_domain.id=KNOWN | custom_domain.profile=KNOWN|UPDATED
-      custom_domain.status=CREATED|VERIFIED|DELETED | custom_domain.list=KNOWN
-      custom_domain.certificate=CONFIGURED
-      email_domain.data=PROVIDED | email_domain.id=KNOWN | email_domain.profile=KNOWN|UPDATED
-      email_domain.status=CREATED|VERIFIED|DELETED | email_domain.list=KNOWN
+        extra_params (str, optional): Additional params as "key=value,key=value".
+            Use @action_name:key=value to target a specific step.
+            Example: "name=Engineering"
 
-    PREDICATES — CUSTOM PAGE
-      custom_page.sign_in_page=KNOWN|UPDATED|DELETED | custom_page.sign_in_page_default=KNOWN
-      custom_page.sign_in_page_preview=KNOWN|UPDATED|DELETED | custom_page.sign_in_page_resources=KNOWN
-      custom_page.error_page=KNOWN|UPDATED|DELETED | custom_page.error_page_default=KNOWN
-      custom_page.error_page_preview=KNOWN|UPDATED|DELETED | custom_page.error_page_resources=KNOWN
-      custom_page.sign_out_settings=KNOWN|UPDATED | custom_page.widget_versions=KNOWN
+    IMPORTANT: This tool does NOT accept a "context" dict parameter.
+    For multi-entity workflows, pass secondary identifiers via extra_params.
 
-    PREDICATES — EMAIL TEMPLATE
-      email_template.id=KNOWN | email_template.profile=KNOWN | email_template.list=KNOWN
-      email_template.settings=KNOWN|UPDATED | email_template.default_content=KNOWN
-      email_template.default_content_preview=KNOWN | email_template.customization_id=KNOWN
-      email_template.customization=CREATED|DELETED | email_template.customization_profile=KNOWN|UPDATED
-      email_template.customization_preview=KNOWN | email_template.customizations=ENUMERATED|DELETED
-      email_template.test_email=SENT
-
-    PREDICATES — DEVICE
-      device.list=KNOWN | device.id=KNOWN|DELETED
-      device.status=KNOWN|ACTIVE|DEACTIVATED|SUSPENDED | device.users=ENUMERATED
-      device_integration.list=KNOWN | device_integration.id=KNOWN
-      device_integration.status=ACTIVE|DEACTIVATED
-      device_posture_check.list=KNOWN | device_posture_check.id=KNOWN|DELETED
-      device_posture_check.profile=UPDATED
-      device_assurance.data=PROVIDED | device_assurance.id=KNOWN
-      device_assurance.profile=KNOWN|UPDATED
-      device_assurance.status=CREATED|DELETED | device_assurance.list=KNOWN
-
-    PREDICATES — LOG STREAM / PROFILE MAPPING / LOGS
-      log_stream.list=KNOWN | log_stream.id=KNOWN|DELETED
-      log_stream.status=KNOWN|ACTIVE|DEACTIVATED | log_stream.profile=UPDATED
-      profile_mapping.list=KNOWN | profile_mapping.id=KNOWN | profile_mapping.profile=UPDATED
-      log.events=RETRIEVED
-
-    PREDICATES — GOVERNANCE
-      gov_request_condition.list=KNOWN | gov_request_condition.id=KNOWN|DELETED
-      gov_request_condition.status=ACTIVE|INACTIVE
-      gov_request.list=KNOWN | gov_request.id=KNOWN | gov_request.details=KNOWN
-      gov_request.my_request_id=KNOWN
-      gov_catalog.entries=KNOWN | gov_catalog.entry_id=KNOWN
-      gov_catalog.user_entries=KNOWN | gov_catalog.my_entries=KNOWN | gov_catalog.my_entry_id=KNOWN
-      gov_campaign.list=KNOWN | gov_campaign.id=KNOWN|DELETED
-      gov_campaign.status=KNOWN|LAUNCHED|ENDED
-      gov_review.list=KNOWN | gov_review.id=KNOWN | gov_review.reassignment=DONE
-      gov_entitlement.list=KNOWN | gov_entitlement.id=KNOWN|DELETED | gov_entitlement.values=ENUMERATED
-      gov_entitlement_bundle.list=KNOWN | gov_entitlement_bundle.id=KNOWN|DELETED
-      gov_collection.list=KNOWN | gov_collection.id=KNOWN|DELETED
-      gov_collection.resources=ENUMERATED | gov_collection.assignments=ENUMERATED
-      gov_grant.list=KNOWN | gov_grant.id=KNOWN
-      gov_principal_entitlement.list=KNOWN | gov_principal_entitlement.history=KNOWN
-      gov_principal_entitlement.access=REVOKED
-      gov_label.list=KNOWN | gov_label.id=KNOWN|DELETED | gov_label.resources=KNOWN
-      gov_resource_owner.list=KNOWN | gov_resource_owner.unowned=KNOWN
-      gov_delegate.list=KNOWN | gov_delegate.my_eligible=KNOWN
-      gov_settings.my_settings=KNOWN|UPDATED
-
-    FILTER / SEARCH / Q
-      filter: Okta Expression Language — '<field> eq "<value>"' joined with ' and '
-        Users:  status eq "ACTIVE|SUSPENDED|DEPROVISIONED", memberOf.id eq "00g..."
-        Groups: type eq "OKTA_GROUP|APP_GROUP|BUILT_IN"
-        Logs:   actor.id eq "...", target.id eq "...", eventType eq "..."
-        Apps:   status eq "ACTIVE|INACTIVE"
-      search: SCIM — 'profile.<attr> eq|sw|co "<value>"' or 'status eq "ACTIVE"'
-              (list_users and list_groups only)
-      q:      prefix match on name/email (plain string)
-      Policies require: type=OKTA_SIGN_ON|PASSWORD|MFA_ENROLL|ACCESS_POLICY|PROFILE_ENROLLMENT|IDP_DISCOVERY
-      Auto-wired: get_user→get_logs (actor.id), get_group→get_logs (target.id),
-                  get_group→list_users (memberOf.id)
-
-    EXTRA PARAMS KEYS
-      filter, search, q, since, until, type, status, name, description,
-      send_email, expand, limit
-      Action-targeted:    "@action_name:key=value" — injects param into one step only
-      Profile auto-bundle: name/description/firstName/lastName/email/login/
-        mobilePhone/secondEmail/displayName/nickName/title/department/organization/userType
-        → auto-bundled into profile{} when first step needs it
-      Commas are delimiters — values cannot contain commas
-
-    WARNINGS
-      • No "context" param — secondary entity IDs go in extra_params
-      • get_group requires group_id (00g...) not name — use list_groups with q= to find by name
-      • Primary entity → target_identifier | Secondary entity → extra_params
-
+    Returns:
+        Solver result + executable plan with plan_id.
+        Call orchestrator_execute(plan_id=...) to run the plan.
     """
     if not goal_state:
         return {
